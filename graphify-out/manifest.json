@@ -1,0 +1,56 @@
+{
+  "Cargo.toml": {
+    "mtime": 1795418778.0271804,
+    "seen": 1795424283.883979,
+    "ast_hash": "f1b8719c7e1ef441de811676e3368314",
+    "semantic_hash": "f1b8719c7e1ef441de811676e3368314"
+  },
+  "build.rs": {
+    "mtime": 1795416064.1715932,
+    "seen": 1795424283.8839858,
+    "ast_hash": "e1ea3b6cf98e52a2b095c300c2d0fcc7",
+    "semantic_hash": "e1ea3b6cf98e52a2b095c300c2d0fcc7"
+  },
+  "build_appimage.sh": {
+    "mtime": 1795383232.6771748,
+    "seen": 1795424283.8839886,
+    "ast_hash": "f00e48d467ed66fc8c68eba709af5190",
+    "semantic_hash": "f00e48d467ed66fc8c68eba709af5190"
+  },
+  "src/auth.rs": {
+    "mtime": 1795424238.2418053,
+    "seen": 1795424283.8839908,
+    "ast_hash": "562d3fa2de6164e7507aba9c9117baca",
+    "semantic_hash": "562d3fa2de6164e7507aba9c9117baca"
+  },
+  "src/launcher.rs": {
+    "mtime": 1795424170.040307,
+    "seen": 1795424283.8839924,
+    "ast_hash": "c49e4e673238f1825b4b397767f13a17",
+    "semantic_hash": "c49e4e673238f1825b4b397767f13a17"
+  },
+  "src/main.rs": {
+    "mtime": 1795424189.532161,
+    "seen": 1795424283.883994,
+    "ast_hash": "513275efb25705e999a97a3514e8ac23",
+    "semantic_hash": "513275efb25705e999a97a3514e8ac23"
+  },
+  "src/meta.rs": {
+    "mtime": 1795424012.4382217,
+    "seen": 1795424283.8839962,
+    "ast_hash": "6bacaf759fef928005c83f3dec17df28",
+    "semantic_hash": "6bacaf759fef928005c83f3dec17df28"
+  },
+  "src/models.rs": {
+    "mtime": 1795424007.9042404,
+    "seen": 1795424283.8839974,
+    "ast_hash": "4fbcdc3cdae630482cf700b4d0557c4e",
+    "semantic_hash": "4fbcdc3cdae630482cf700b4d0557c4e"
+  },
+  "src/tray.rs": {
+    "mtime": 1795418348.2735248,
+    "seen": 1795424283.8839989,
+    "ast_hash": "ae1387d288d6217b4e82bf9afbe88e01",
+    "semantic_hash": "ae1387d288d6217b4e82bf9afbe88e01"
+  }
+}
