@@ -13,6 +13,17 @@ A Minecraft launcher written in Rust with a Slint UI styled after Material Desig
 - **Java and launch:** Automatic system Java detection, managed Java downloads, native library extraction, live game logs, and automatic clipboard copy for new screenshots.
 - **Customization and extras:** Dynamic Material 3 color palettes from a custom accent color, built-in pixel-art and custom instance icons, an optional procedural cat overlay, Discord Rich Presence, Linux system tray support, and 9 UI languages (`ru`, `en`, `uk`, `es`, `fr`, `de`, `pl`, `zh`, `ja`).
 
+## Installing
+
+Prebuilt packages (`.exe`, `.msi`, `.AppImage`, `.deb`, `.rpm`, `.pacman`, `.flatpak`, `.dmg`) are available on [GitHub Releases](https://github.com/Xeone52670v3/AxyLauncher/releases).
+
+On Linux, you can also install and update via the hosted Flatpak repository:
+
+```bash
+flatpak remote-add --user --if-not-exists axylauncher https://xeone52670v3.github.io/AxyLauncher/axylauncher.flatpakrepo
+flatpak install --user -y axylauncher io.github.xeone52670v3.AxyLauncher
+```
+
 ## Building from source
 
 Install the Rust toolchain from [rustup.rs](https://rustup.rs). On Windows, you also need Desktop C++ Build Tools.

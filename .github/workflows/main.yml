@@ -110,14 +110,43 @@
               chmod +x /tmp/appimagetool
               ARCH=x86_64 /tmp/appimagetool --appimage-extract-and-run "$APPDIR" out/AxyLauncher-linux-x86_64.AppImage
 
-          - name: Build .flatpak bundle
+          - name: Build .flatpak bundle & Flatpak repo for GitHub Pages
             run: |
               flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
               flatpak install --user -y flathub org.freedesktop.Platform//24.08 org.freedesktop.Sdk//24.08
-              rm -rf /tmp/flatpak-build /tmp/flatpak-repo
+              rm -rf /tmp/flatpak-build /tmp/flatpak-repo /tmp/flatpak-site
               ostree init --mode=archive-z2 --repo=/tmp/flatpak-repo
               flatpak-builder --user --force-clean --repo=/tmp/flatpak-repo /tmp/flatpak-build packaging/io.github.xeone52670v3.AxyLauncher.yml
+              flatpak build-update-repo /tmp/flatpak-repo
               flatpak build-bundle /tmp/flatpak-repo out/AxyLauncher-linux-x86_64.flatpak io.github.xeone52670v3.AxyLauncher
+              mkdir -p /tmp/flatpak-site
+              cp -r /tmp/flatpak-repo /tmp/flatpak-site/repo
+              cat > /tmp/flatpak-site/axylauncher.flatpakrepo << 'EOF'
+              [Flatpak Repo]
+              Title=AxyLauncher
+              Url=https://xeone52670v3.github.io/AxyLauncher/repo/
+              Homepage=https://github.com/Xeone52670v3/AxyLauncher
+              Comment=AxyLauncher Flatpak Repository (latest release only)
+              NoGPGVerify=true
+              EOF
+              cat > /tmp/flatpak-site/index.html << 'EOF'
+              <!doctype html>
+              <html><head><meta charset="utf-8"><title>AxyLauncher Flatpak Repository</title></head>
+              <body style="font-family:sans-serif;max-width:720px;margin:40px auto;padding:0 16px;">
+              <h1>AxyLauncher Flatpak Repository</h1>
+              <p>Add repository and install:</p>
+              <pre>flatpak remote-add --user --if-not-exists axylauncher https://xeone52670v3.github.io/AxyLauncher/axylauncher.flatpakrepo
+              flatpak install --user -y axylauncher io.github.xeone52670v3.AxyLauncher</pre>
+              <p>Update anytime:</p>
+              <pre>flatpak update --user io.github.xeone52670v3.AxyLauncher</pre>
+              <p><a href="https://github.com/Xeone52670v3/AxyLauncher/releases">All GitHub Releases</a></p>
+              </body></html>
+              EOF
+
+          - name: Upload Flatpak Pages artifact
+            uses: actions/upload-pages-artifact@v3
+            with:
+              path: /tmp/flatpak-site
 
           - uses: actions/upload-artifact@v4
             with:
@@ -154,11 +183,23 @@
         if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.create_release)
         runs-on: ubuntu-latest
         steps:
-          - name: Download all artifacts
+          - name: Download Windows artifacts
             uses: actions/download-artifact@v4
             with:
+              name: windows-installers
               path: release-files
-              merge-multiple: true
+
+          - name: Download Linux artifacts
+            uses: actions/download-artifact@v4
+            with:
+              name: linux-packages
+              path: release-files
+
+          - name: Download macOS artifacts
+            uses: actions/download-artifact@v4
+            with:
+              name: macos-dmg
+              path: release-files
 
           - name: List release assets
             run: ls -lh release-files/
@@ -170,3 +211,19 @@
               name: "AxyLauncher ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}"
               generate_release_notes: true
               files: release-files/*
+
+      deploy-pages:
+        name: Deploy Flatpak Repo (GitHub Pages)
+        needs: [build-linux]
+        if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.create_release)
+        runs-on: ubuntu-latest
+        permissions:
+          pages: write
+          id-token: write
+        environment:
+          name: github-pages
+          url: ${{ steps.deployment.outputs.page_url }}
+        steps:
+          - name: Deploy to GitHub Pages
+            id: deployment
+            uses: actions/deploy-pages@v4

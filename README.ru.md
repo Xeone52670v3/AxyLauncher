@@ -14,6 +14,17 @@
 
 Из приятных мелочей - интерфейс сам перекрашивает палитру Material 3 под выбранный акцентный цвет, для сборок есть набор встроенных пиксельных иконок и поддержка своих картинок, а поверх окна можно посадить процедурно нарисованного котика. Скриншоты из игры автоматически копируются в буфер обмена, работает Discord Rich Presence, сворачивание в трей на Linux и девять языков интерфейса, включая русский, английский и украинский.
 
+## Установка
+
+Готовые сборки (`.exe`, `.msi`, `.AppImage`, `.deb`, `.rpm`, `.pacman`, `.flatpak`, `.dmg`) лежат на странице [GitHub Releases](https://github.com/Xeone52670v3/AxyLauncher/releases).
+
+На Linux лаунчер можно поставить и обновлять через собственный Flatpak-репозиторий:
+
+```bash
+flatpak remote-add --user --if-not-exists axylauncher https://xeone52670v3.github.io/AxyLauncher/axylauncher.flatpakrepo
+flatpak install --user -y axylauncher io.github.xeone52670v3.AxyLauncher
+```
+
 ## Сборка из исходников
 
 Для сборки понадобится установленный Rust с сайта [rustup.rs](https://rustup.rs). На Windows дополнительно нужны Desktop C++ Build Tools.
