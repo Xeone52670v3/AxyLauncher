@@ -41,7 +41,7 @@ else
         BIN_SRC="target/release/axylauncher"
     fi
     echo "==> Сборка AxyLauncher для macOS (${TARGET:-native})..."
-    cargo build --release "${EXTRA_ARGS[@]}"
+    cargo build --release ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}
     cp -f "${BIN_SRC}" "${OUT_DIR}/axylauncher"
 fi
 
