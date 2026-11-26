@@ -4,7 +4,7 @@ use reqwest::Client;
 use std::path::{Path, PathBuf};
 use tokio::io::AsyncWriteExt;
 
-pub const APP_VERSION: &str = "0.1.2";
+pub const APP_VERSION: &str = "0.2.0";
 pub const GITHUB_REPO: &str = "Xeone52670v3/AxyLauncher";
 
 #[allow(dead_code)]
