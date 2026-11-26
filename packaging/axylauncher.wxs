@@ -1,0 +1,37 @@
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package Name="AxyLauncher"
+           Manufacturer="Xeone52670v3"
+           Version="$(var.Version)"
+           UpgradeCode="7A2E8C4D-9B31-4E5F-A1C6-8D4F2E9B3A10"
+           Scope="perUser">
+    <MajorUpgrade DowngradeErrorMessage="A newer version of AxyLauncher is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <StandardDirectory Id="LocalAppDataFolder">
+      <Directory Id="INSTALLFOLDER" Name="AxyLauncher" />
+    </StandardDirectory>
+
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Directory Id="ApplicationProgramsFolder" Name="AxyLauncher" />
+    </StandardDirectory>
+
+    <Component Id="MainExecutable" Directory="INSTALLFOLDER" Guid="2B9D4E1A-6C83-4F2A-9D1E-5A7C3B8E0F41">
+      <File Id="AxyLauncherExe" Source="target\release\axylauncher.exe" KeyPath="yes" />
+    </Component>
+
+    <Component Id="ApplicationShortcut" Directory="ApplicationProgramsFolder" Guid="9E1C7A3F-4D52-4B8E-8C21-6F3A9D5B2E74">
+      <Shortcut Id="StartMenuShortcut"
+                Name="AxyLauncher"
+                Description="Minecraft launcher in Rust with Material Design 3 UI"
+                Target="[INSTALLFOLDER]axylauncher.exe"
+                WorkingDirectory="INSTALLFOLDER" />
+      <RemoveFolder Id="CleanUpShortCut" Directory="ApplicationProgramsFolder" On="uninstall" />
+      <RegistryValue Root="HKCU" Key="Software\Xeone52670v3\AxyLauncher" Name="installed" Type="integer" Value="1" KeyPath="yes" />
+    </Component>
+
+    <Feature Id="MainFeature" Title="AxyLauncher" Level="1">
+      <ComponentRef Id="MainExecutable" />
+      <ComponentRef Id="ApplicationShortcut" />
+    </Feature>
+  </Package>
+</Wix>

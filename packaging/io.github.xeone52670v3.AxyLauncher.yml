@@ -1,0 +1,30 @@
+app-id: io.github.xeone52670v3.AxyLauncher
+runtime: org.freedesktop.Platform
+runtime-version: '24.08'
+sdk: org.freedesktop.Sdk
+command: axylauncher
+finish-args:
+  - --share=ipc
+  - --share=network
+  - --socket=x11
+  - --socket=wayland
+  - --socket=pulseaudio
+  - --device=dri
+  - --filesystem=home
+  - --talk-name=org.kde.StatusNotifierWatcher
+  - --talk-name=org.freedesktop.Notifications
+modules:
+  - name: axylauncher
+    buildsystem: simple
+    build-commands:
+      - install -Dm755 axylauncher /app/bin/axylauncher
+      - mkdir -p /app/share/applications
+      - sed 's/^Icon=axylauncher$/Icon=io.github.xeone52670v3.AxyLauncher/' axylauncher.desktop > /app/share/applications/io.github.xeone52670v3.AxyLauncher.desktop
+      - install -Dm644 axylauncher.svg /app/share/icons/hicolor/scalable/apps/io.github.xeone52670v3.AxyLauncher.svg
+    sources:
+      - type: file
+        path: ../target/release/axylauncher
+      - type: file
+        path: axylauncher.desktop
+      - type: file
+        path: axylauncher.svg

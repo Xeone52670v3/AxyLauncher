@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=AxyLauncher
+GenericName=Minecraft Launcher
+Comment=Minecraft launcher in Rust with Material Design 3 UI
+Exec=axylauncher
+Icon=axylauncher
+Categories=Game;
+Terminal=false
+StartupWMClass=axylauncher
