@@ -176,10 +176,10 @@ where
                                 if ready {
                                     match copy_png_to_clipboard(&p) {
                                         Ok(()) => log_cb(format!(
-                                            "[Скриншот] Скопирован в буфер обмена: {}",
+                                            "[Screenshot] Copied to clipboard: {}",
                                             p.file_name().and_then(|n| n.to_str()).unwrap_or("screenshot.png")
                                         )),
-                                        Err(err) => log_cb(format!("[Скриншот] Не удалось скопировать в буфер: {}", err)),
+                                        Err(err) => log_cb(format!("[Screenshot] Failed to copy to clipboard: {}", err)),
                                     }
                                 }
                             }
@@ -640,20 +640,20 @@ where
 
     if prepare_only {
         log_cb(format!(
-            "=== Загрузка сборки «{}» (Minecraft {} | {}) ===",
+            "=== Downloading instance '{}' (Minecraft {} | {}) ===",
             instance.name,
             instance.mc_version,
             instance.loader.as_str()
         ));
     } else {
         log_cb(format!(
-            "=== Запуск сборки «{}» (Minecraft {} | {}) ===",
+            "=== Launching instance '{}' (Minecraft {} | {}) ===",
             instance.name,
             instance.mc_version,
             instance.loader.as_str()
         ));
         log_cb(format!(
-            "Аккаунт: {} [{}] (UUID: {})",
+            "Account: {} [{}] (UUID: {})",
             account.username,
             account.account_type.label(),
             account.uuid
@@ -677,7 +677,7 @@ where
             .fetch_horizon_linux_asset(&instance.loader_version)
             .await?;
         log_cb(format!(
-            "[Horizon] Выбран релиз {} -> файл {}",
+            "[Horizon] Selected release {} -> file {}",
             tag, asset.name
         ));
 
@@ -691,7 +691,7 @@ where
                 format!("Скачивание Horizon {} ({})...", tag, asset.name),
             );
             log_cb(format!(
-                "[Horizon] Скачивание {}...",
+                "[Horizon] Downloading {}...",
                 asset.browser_download_url
             ));
             let bytes = meta
@@ -706,7 +706,7 @@ where
             tokio::fs::write(&asset_path, &bytes).await?;
         } else {
             log_cb(format!(
-                "[Horizon] Используется кэшированный файл {}",
+                "[Horizon] Using cached file {}",
                 asset_path.display()
             ));
         }
@@ -744,7 +744,7 @@ where
 
         if prepare_only {
             prog_cb(1.0, format!("Horizon {} загружен и готов к запуску!", tag));
-            log_cb(format!("[Horizon] Подготовка завершена: {}", exec_path.display()));
+            log_cb(format!("[Horizon] Preparation complete: {}", exec_path.display()));
             return Ok(LaunchOutcome {
                 exit_code: 0,
                 played_minutes: 0,
@@ -753,7 +753,7 @@ where
 
         prog_cb(0.95, format!("Запуск Horizon {}...", tag));
         log_cb(format!(
-            "[Horizon] Запуск нативного Rust-клиента: {} (dir: {})",
+            "[Horizon] Starting native Rust client: {} (dir: {})",
             exec_path.display(),
             instance_dir.display()
         ));
@@ -790,11 +790,11 @@ where
         let exit_code = tokio::select! {
             status = child.wait() => {
                 let s = status?;
-                log_cb(format!("=== Процесс Horizon завершился с кодом: {} ===", s));
+                log_cb(format!("=== Horizon process exited with code: {} ===", s));
                 s.code().unwrap_or(0)
             }
             _ = &mut kill_rx => {
-                log_cb("=== Остановка процесса Horizon по запросу пользователя ===".to_string());
+                log_cb("=== Stopping Horizon process by user request ===".to_string());
                 let _ = child.kill().await;
                 let _ = child.wait().await;
                 -1
@@ -833,7 +833,7 @@ where
         // ====================================================================
         // LABYMOD 4 REPOSITORY RESOLUTION (`https://releases.r2.labymod.net`)
         // ====================================================================
-        log_cb("Загрузка манифеста LabyMod 4 из репозитория releases.r2.labymod.net...".to_string());
+        log_cb("Fetching LabyMod 4 manifest from releases.r2.labymod.net...".to_string());
         let laby_manifest = meta.fetch_labymod_manifest().await?;
         let laby_libs = meta.fetch_labymod_libraries().await?;
 
@@ -845,7 +845,7 @@ where
             .ok_or_else(|| anyhow!("Версия Minecraft не найдена в манифесте LabyMod 4"))?;
 
         log_cb(format!(
-            "LabyMod v{} (commit {}) для Minecraft {}",
+            "LabyMod v{} (commit {}) for Minecraft {}",
             laby_manifest.labymod_version, laby_manifest.commit_reference, mc_entry.version
         ));
 
@@ -966,7 +966,7 @@ where
             .unwrap_or_else(|| instance.mc_version.clone());
 
         log_cb(format!(
-            "Загрузка пакета net.minecraft ({}) из Prism Meta...",
+            "Fetching net.minecraft ({}) from Prism Meta...",
             effective_mc_ver
         ));
         let mc_pkg = meta
@@ -1014,7 +1014,7 @@ where
                 if mappings_enabled {
                     // Both Fabric and Quilt require `net.fabricmc.intermediary` for the MC version
                     log_cb(format!(
-                        "Загрузка net.fabricmc.intermediary ({}) из Prism Meta...",
+                        "Fetching net.fabricmc.intermediary ({}) from Prism Meta...",
                         mappings_ver
                     ));
                     if let Ok(inter_pkg) = meta
@@ -1050,7 +1050,7 @@ where
                 };
 
                 log_cb(format!(
-                    "Загрузка {} ({}) из Prism Meta...",
+                    "Fetching {} ({}) from Prism Meta...",
                     uid, loader_ver
                 ));
                 let loader_pkg = meta.fetch_prism_package(uid, &loader_ver).await?;
@@ -1093,7 +1093,7 @@ where
                 };
 
                 log_cb(format!(
-                    "Загрузка {} ({}) из Prism Meta...",
+                    "Fetching {} ({}) from Prism Meta...",
                     uid, loader_ver
                 ));
                 let loader_pkg = meta.fetch_prism_package(uid, &loader_ver).await?;
@@ -1190,7 +1190,7 @@ where
                                 .unwrap_or_else(|| "3.3.1".to_string())
                         });
                     log_cb(format!(
-                        "Загрузка {} ({}) из Prism Meta...",
+                        "Fetching {} ({}) from Prism Meta...",
                         req.uid, lwjgl_ver
                     ));
                     if let Ok(lwjgl_pkg) = meta.fetch_prism_package(&req.uid, &lwjgl_ver).await {
@@ -1234,7 +1234,7 @@ where
 
         if let Some(custom_client) = replace_jar_path {
             log_cb(format!(
-                "[Компоненты] Замена Minecraft.jar: {}",
+                "[Components] Replacing Minecraft.jar: {}",
                 custom_client.display()
             ));
             classpath_entries.push(custom_client);
@@ -1265,7 +1265,7 @@ where
                 ComponentKind::JarMod => {
                     let p = PathBuf::from(comp.file_path.trim());
                     if p.is_file() {
-                        log_cb(format!("[Компоненты] JarMod -> Minecraft.jar: {}", p.display()));
+                        log_cb(format!("[Components] JarMod -> Minecraft.jar: {}", p.display()));
                         classpath_entries.insert(0, p);
                     }
                 }
@@ -1277,7 +1277,7 @@ where
                         } else {
                             format!("-javaagent:{}={}", p, comp.extra_args.trim())
                         };
-                        log_cb(format!("[Компоненты] Java-агент: {}", arg));
+                        log_cb(format!("[Components] Java Agent: {}", arg));
                         extra_jvm_args.push(arg);
                     }
                 }
@@ -1307,7 +1307,7 @@ where
                                         true,
                                     );
                                 }
-                                log_cb(format!("[Компоненты] Применён JSON-патч: {}", comp.name));
+                                log_cb(format!("[Components] Applied JSON patch: {}", comp.name));
                             }
                         }
                     } else if !p.is_empty() && Path::new(p).is_file() {
@@ -1355,7 +1355,7 @@ where
     // ========================================================================
     if instance.loader == LoaderType::OptiFine || instance.optifine_enabled {
         log_cb(format!(
-            "Проверка OptiFine для Minecraft {}...",
+            "Checking OptiFine for Minecraft {}...",
             instance.mc_version
         ));
         let of_list = meta
@@ -1415,7 +1415,7 @@ where
             };
 
             log_cb(format!(
-                "Добавлен OptiFine {} ({}) -> {}",
+                "Added OptiFine {} ({}) -> {}",
                 of_entry.full_version(),
                 url,
                 target_path.display()
@@ -1428,7 +1428,7 @@ where
             });
         } else {
             log_cb(format!(
-                "Предупреждение: для Minecraft {} не найдено сборок OptiFine в репозитории",
+                "Warning: no OptiFine builds found in repository for Minecraft {}",
                 instance.mc_version
             ));
         }
@@ -1444,7 +1444,7 @@ where
             instance.custom_loader_name.trim()
         };
         let path_or_url = instance.custom_loader_path.trim();
-        log_cb(format!("[Кастомный загрузчик] Активирован: {}", loader_label));
+        log_cb(format!("[Custom Loader] Activated: {}", loader_label));
 
         if !path_or_url.is_empty() {
             let is_http = path_or_url.starts_with("http://") || path_or_url.starts_with("https://");
@@ -1496,14 +1496,14 @@ where
                             );
                         }
                         log_cb(format!(
-                            "[Кастомный загрузчик] Загружен профиль {} ({} библиотек)",
+                            "[Custom Loader] Loaded profile {} ({} libraries)",
                             loader_label,
                             pkg.libraries.len()
                         ));
                     }
                     Err(e) => {
                         log_cb(format!(
-                            "[Кастомный загрузчик] Предупреждение: не удалось разобрать JSON {}: {}",
+                            "[Custom Loader] Warning: failed to parse JSON {}: {}",
                             path_or_url, e
                         ));
                     }
@@ -1531,7 +1531,7 @@ where
                     classpath_entries.push(local_jar);
                 } else {
                     log_cb(format!(
-                        "[Кастомный загрузчик] Предупреждение: файл не найден: {}",
+                        "[Custom Loader] Warning: file not found: {}",
                         path_or_url
                     ));
                 }
@@ -1555,7 +1555,7 @@ where
 
         if !verify_file_sha1(&idx_path, Some(&asset_idx.sha1)) {
             log_cb(format!(
-                "Скачивание индекса ассетов {}.json...",
+                "Downloading asset index {}.json...",
                 asset_idx.id
             ));
             let bytes = meta
@@ -1657,7 +1657,7 @@ where
                     if let Some(nat_dir) = &task.extract_natives_to {
                         if let Err(e) = extract_native_jar(&task.dest, nat_dir) {
                             log_cb(format!(
-                                "Предупреждение при распаковке нативов {:?}: {}",
+                                "Warning extracting natives {:?}: {}",
                                 task.dest.file_name(),
                                 e
                             ));
@@ -1683,17 +1683,17 @@ where
         for r in results {
             if let Err(e) = r {
                 failed_count += 1;
-                log_cb(format!("Ошибка загрузки файла: {}", e));
+                log_cb(format!("File download error: {}", e));
             }
         }
         if failed_count > 0 {
             log_cb(format!(
-                "Внимание: не удалось загрузить {} файлов, продолжаем запуск...",
+                "Warning: failed to download {} files, continuing launch...",
                 failed_count
             ));
         }
     } else {
-        log_cb("Все библиотеки и ассеты уже кэшированы и проверены по SHA-1.".to_string());
+        log_cb("All libraries and assets are already cached and SHA-1 verified.".to_string());
     }
 
     // ========================================================================
@@ -1752,12 +1752,12 @@ where
 
         match effective_backend {
             AuthAgentBackend::Disabled => {
-                log_cb("[Авторизация] Агент патчинга authlib отключён в настройках.".to_string());
+                log_cb("[Auth] Authlib patcher agent is disabled in settings.".to_string());
             }
             AuthAgentBackend::Loki => {
                 if use_custom_jar {
                     log_cb(format!(
-                        "[unmojang/Loki] Используется пользовательский .jar: {}",
+                        "[unmojang/Loki] Using custom .jar: {}",
                         custom_jar.display()
                     ));
                     extra_jvm_args.push(format!(
@@ -1797,7 +1797,7 @@ where
             AuthAgentBackend::AuthlibInjector => {
                 let injector_jar = if use_custom_jar {
                     log_cb(format!(
-                        "[authlib-injector] Используется пользовательский .jar: {}",
+                        "[authlib-injector] Using custom .jar: {}",
                         custom_jar.display()
                     ));
                     custom_jar
@@ -1843,7 +1843,7 @@ where
         };
         if use_glfw {
             if let Some(glfw) = glfw_custom.or_else(|| find_system_library(&["libglfw.so", "libglfw.so.3"])) {
-                log_cb(format!("[Linux] Используется системная GLFW: {}", glfw));
+                log_cb(format!("[Linux] Using system GLFW: {}", glfw));
                 extra_jvm_args.push(format!("-Dorg.lwjgl.glfw.libname={}", glfw));
             }
         }
@@ -1862,7 +1862,7 @@ where
         };
         if use_openal {
             if let Some(al) = openal_custom.or_else(|| find_system_library(&["libopenal.so", "libopenal.so.1"])) {
-                log_cb(format!("[Linux] Используется системная OpenAL: {}", al));
+                log_cb(format!("[Linux] Using system OpenAL: {}", al));
                 extra_jvm_args.push(format!("-Dorg.lwjgl.openal.libname={}", al));
             }
         }
@@ -2034,7 +2034,7 @@ where
         if !qp_world.is_empty() {
             game_args.push("--quickPlaySingleplayer".to_string());
             game_args.push(qp_world.to_string());
-            log_cb(format!("[Auto-Join] Автозапуск одиночного мира: {}", qp_world));
+            log_cb(format!("[Auto-Join] Auto-joining singleplayer world: {}", qp_world));
         } else if !qp_server.is_empty() {
             let minor: u32 = instance
                 .mc_version
@@ -2052,7 +2052,7 @@ where
                 game_args.push("--port".to_string());
                 game_args.push(port.to_string());
             }
-            log_cb(format!("[Auto-Join] Автоподключение к серверу: {}", qp_server));
+            log_cb(format!("[Auto-Join] Auto-connecting to server: {}", qp_server));
         }
     }
 
@@ -2083,7 +2083,7 @@ where
     if prepare_only {
         prog_cb(1.0, format!("Сборка «{}» полностью загружена!", instance.name));
         log_cb(format!(
-            "=== Сборка «{}» успешно загружена и готова к запуску ===",
+            "=== Instance '{}' downloaded and ready to launch ===",
             instance.name
         ));
         return Ok(LaunchOutcome {
@@ -2146,7 +2146,7 @@ where
     }
 
     log_cb(format!(
-        "Запуск Java {} (RAM: {}M-{}M, MainClass: {})",
+        "Starting Java {} (RAM: {}M-{}M, MainClass: {})",
         java_bin, min_mem, max_mem, main_class
     ));
     prog_cb(0.98, "Запуск процесса Minecraft...".to_string());
@@ -2236,13 +2236,13 @@ where
         status = child.wait() => {
             let s = status?;
             log_cb(format!(
-                "=== Процесс Minecraft завершился с кодом: {} ===",
+                "=== Minecraft process exited with code: {} ===",
                 s
             ));
             s.code().unwrap_or(0)
         }
         _ = &mut kill_rx => {
-            log_cb("=== Остановка процесса Minecraft по запросу пользователя ===".to_string());
+            log_cb("=== Stopping Minecraft process by user request ===".to_string());
             let _ = child.kill().await;
             let _ = child.wait().await;
             -1
@@ -2316,7 +2316,7 @@ where
     let java_root = java_dir.join(format!("java-{}", major));
     if let Some(existing) = find_java_bin_in_dir(&java_root) {
         log_cb(format!(
-            "[Java {}] Используется установленная управляемая Java: {}",
+            "[Java {}] Using installed managed Java: {}",
             major,
             existing.display()
         ));
@@ -2325,7 +2325,7 @@ where
 
     tokio::fs::create_dir_all(&java_root).await?;
     log_cb(format!(
-        "[Java {}] Скачивание отдельной Java {} для этой версии Minecraft...",
+        "[Java {}] Downloading dedicated Java {} for this Minecraft version...",
         major, major
     ));
     prog_cb(
@@ -2498,4 +2498,118 @@ fn find_first_executable_in_dir(dir: &Path) -> Option<PathBuf> {
         }
     }
     None
+}
+
+#[derive(Debug, Clone)]
+pub struct JavaInstallationInfo {
+    pub version: String,
+    pub arch: String,
+    pub path: String,
+    pub is_managed: bool,
+}
+
+fn probe_java_version_and_arch(java_bin: &Path) -> (String, String) {
+    let arch = if cfg!(target_arch = "aarch64") {
+        "aarch64"
+    } else if cfg!(target_arch = "x86") {
+        "x86"
+    } else {
+        "amd64"
+    }
+    .to_string();
+    let out = std::process::Command::new(java_bin).arg("-version").output();
+    if let Ok(o) = out {
+        let txt = format!(
+            "{}\n{}",
+            String::from_utf8_lossy(&o.stderr),
+            String::from_utf8_lossy(&o.stdout)
+        );
+        if let Some(first_q) = txt.find('"') {
+            if let Some(end_q) = txt[first_q + 1..].find('"') {
+                let ver = txt[first_q + 1..first_q + 1 + end_q].to_string();
+                let det_arch = if txt.contains("aarch64") || txt.contains("arm64") {
+                    "aarch64".to_string()
+                } else if txt.contains("64-Bit") {
+                    "amd64".to_string()
+                } else {
+                    arch
+                };
+                return (ver, det_arch);
+            }
+        }
+    }
+    ("unknown".to_string(), arch)
+}
+
+/// Scan managed launcher Java installations and system JVM directories (like FreesmLauncher Java -> Installations)
+pub fn scan_java_installations(java_dir: &Path) -> Vec<JavaInstallationInfo> {
+    let mut found = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    let bin_name = if cfg!(windows) { "java.exe" } else { "java" };
+
+    // 1. Scan managed java_dir
+    if let Ok(entries) = std::fs::read_dir(java_dir) {
+        for e in entries.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                if let Some(jb) = find_java_bin_in_dir(&p) {
+                    let s = jb.to_string_lossy().to_string();
+                    if seen.insert(s.clone()) {
+                        let (ver, arch) = probe_java_version_and_arch(&jb);
+                        found.push(JavaInstallationInfo {
+                            version: ver,
+                            arch,
+                            path: s,
+                            is_managed: true,
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    // 2. Scan system JVM directories
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    if cfg!(target_os = "linux") {
+        for base in ["/usr/lib/jvm", "/usr/lib64/jvm", "/opt"] {
+            if let Ok(entries) = std::fs::read_dir(base) {
+                for e in entries.flatten() {
+                    let jb = e.path().join("bin").join("java");
+                    if jb.is_file() {
+                        candidates.push(jb);
+                    }
+                }
+            }
+        }
+        let sys_java = PathBuf::from("/usr/bin/java");
+        if sys_java.is_file() {
+            candidates.push(sys_java);
+        }
+    } else if cfg!(target_os = "macos") {
+        if let Ok(entries) = std::fs::read_dir("/Library/Java/JavaVirtualMachines") {
+            for e in entries.flatten() {
+                let jb = e.path().join("Contents/Home/bin/java");
+                if jb.is_file() {
+                    candidates.push(jb);
+                }
+            }
+        }
+    }
+
+    for jb in candidates {
+        let canon = std::fs::canonicalize(&jb).unwrap_or(jb);
+        let s = canon.to_string_lossy().to_string();
+        if seen.insert(s.clone()) {
+            let (ver, arch) = probe_java_version_and_arch(&canon);
+            found.push(JavaInstallationInfo {
+                version: ver,
+                arch,
+                path: s,
+                is_managed: false,
+            });
+        }
+    }
+
+    found.sort_by(|a, b| a.version.cmp(&b.version));
+    found
 }

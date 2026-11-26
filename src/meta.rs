@@ -36,6 +36,30 @@ fn resolve_image_ext(bytes: &[u8], content_type: Option<&str>, url: &str) -> Opt
     }
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct CatalogFilter {
+    pub sort_key: String,        // "relevance", "downloads", "follows", "updated", "newest", "popularity"
+    pub mc_version: String,      // "" or "Все" = any
+    pub loaders: Vec<String>,    // e.g. ["fabric", "quilt"] or ["iris"]
+    pub category_ids: Vec<String>, // Modrinth slugs or CurseForge numeric category IDs
+    pub client_side: bool,
+    pub server_side: bool,
+    pub open_source: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct AssetVersionInfo {
+    pub id: String,
+    pub name: String,
+    pub version_number: String,
+    pub mc_versions: String,
+    pub loaders: String,
+    pub release_type: String,
+    pub date: String,
+    pub filename: String,
+    pub download_url: String,
+}
+
 pub struct MetaClient {
     http: reqwest::Client,
     prism_base: String,
@@ -816,13 +840,25 @@ impl MetaClient {
         match provider {
             ExternalProvider::Modrinth => {
                 log_cb(format!(
-                    "[Модпак Modrinth] Получение последней версии модпака «{}» ({})...",
+                    "[Modrinth Modpack] Fetching latest version of '{}' ({})...",
                     fallback_title, pack_id
                 ));
-                let (_filename, mrpack_url) = self
-                    .fetch_modrinth_download(pack_id, "", &LoaderType::Vanilla)
-                    .await?;
-                log_cb(format!("[Модпак Modrinth] Скачивание архива {}...", mrpack_url));
+                let (ver_id, ver_name, mrpack_url) = match self
+                    .fetch_project_versions("Modrinth", pack_id, None)
+                    .await
+                {
+                    Ok(vers) if !vers.is_empty() && !vers[0].download_url.is_empty() => {
+                        let v = &vers[0];
+                        (v.id.clone(), v.name.clone(), v.download_url.clone())
+                    }
+                    _ => {
+                        let (_filename, url) = self
+                            .fetch_modrinth_download(pack_id, "", &LoaderType::Vanilla)
+                            .await?;
+                        (String::new(), String::new(), url)
+                    }
+                };
+                log_cb(format!("[Modrinth Modpack] Downloading archive {}...", mrpack_url));
                 let bytes = self
                     .http
                     .get(&mrpack_url)
@@ -835,7 +871,7 @@ impl MetaClient {
                 let tmp_mrpack = instances_dir.join(&inst_id).join("pack.mrpack");
                 tokio::fs::write(&tmp_mrpack, &bytes).await?;
 
-                self.extract_and_install_mrpack(
+                let mut inst = self.extract_and_install_mrpack(
                     &tmp_mrpack,
                     &inst_id,
                     fallback_title,
@@ -843,11 +879,17 @@ impl MetaClient {
                     &instance_mc_dir,
                     log_cb,
                 )
-                .await
+                .await?;
+                inst.modpack_provider = "Modrinth".to_string();
+                inst.modpack_id = pack_id.to_string();
+                inst.modpack_version_id = ver_id;
+                inst.modpack_version_name = ver_name;
+                inst.last_played = Some("Готов".to_string());
+                Ok(inst)
             }
             ExternalProvider::Technic => {
                 log_cb(format!(
-                    "[Модпак Technic] Получение метаданных Technic «{}»...",
+                    "[Technic Modpack] Fetching Technic metadata '{}'...",
                     pack_id
                 ));
                 let url = format!(
@@ -868,7 +910,7 @@ impl MetaClient {
 
                 if let Some(zip_url) = json["url"].as_str().filter(|s| !s.is_empty()) {
                     log_cb(format!(
-                        "[Модпак Technic] Скачивание архива модпака {}...",
+                        "[Technic Modpack] Downloading modpack archive {}...",
                         zip_url
                     ));
                     if let Ok(r) = self.http.get(zip_url).send().await {
@@ -881,7 +923,7 @@ impl MetaClient {
                     }
                 }
 
-                Ok(Instance::new_default(
+                let mut inst = Instance::new_default(
                     inst_id,
                     pack_title,
                     custom_group.to_string(),
@@ -890,17 +932,22 @@ impl MetaClient {
                     "latest".to_string(),
                     false,
                     None,
-                    "Technic Модпак",
-                ))
+                    "Готов",
+                );
+                inst.modpack_provider = "Technic".to_string();
+                inst.modpack_id = pack_id.to_string();
+                Ok(inst)
             }
             ExternalProvider::Ftb | ExternalProvider::CurseForge | ExternalProvider::AtLauncher => {
                 log_cb(format!(
-                    "[Модпак {}] Создание и настройка профиля модпака «{}» (MC {})...",
+                    "[{} Modpack] Creating & configuring modpack profile '{}' (MC {})...",
                     provider.as_str(),
                     fallback_title,
                     fallback_mc
                 ));
 
+                let mut ftb_ver_id = String::new();
+                let mut ftb_ver_name = String::new();
                 // If FTB, fetch the manifest file list from api.modpacks.ch and download mods!
                 if provider == ExternalProvider::Ftb {
                     let detail_url = format!("https://api.modpacks.ch/public/modpack/{}", pack_id);
@@ -908,6 +955,8 @@ impl MetaClient {
                         if let Ok(d) = r.json::<serde_json::Value>().await {
                             if let Some( latest_ver ) = d["versions"].as_array().and_then(|a| a.last()) {
                                 if let Some(vid) = latest_ver["id"].as_i64() {
+                                    ftb_ver_id = vid.to_string();
+                                    ftb_ver_name = latest_ver["name"].as_str().unwrap_or(&ftb_ver_id).to_string();
                                     let ver_url = format!(
                                         "https://api.modpacks.ch/public/modpack/{}/{}",
                                         pack_id, vid
@@ -916,7 +965,7 @@ impl MetaClient {
                                         if let Ok(vj) = vr.json::<serde_json::Value>().await {
                                             if let Some(files) = vj["files"].as_array() {
                                                 log_cb(format!(
-                                                    "[Модпак FTB] Найдено файлов в манифесте: {} (скачивание основных модов)...",
+                                                    "[FTB Modpack] Found {} manifest files (downloading core mods)...",
                                                     files.len()
                                                 ));
                                                 let mut tasks = Vec::new();
@@ -940,7 +989,7 @@ impl MetaClient {
                     }
                 }
 
-                Ok(Instance::new_default(
+                let mut inst = Instance::new_default(
                     inst_id,
                     fallback_title.to_string(),
                     custom_group.to_string(),
@@ -953,8 +1002,13 @@ impl MetaClient {
                     "latest".to_string(),
                     false,
                     None,
-                    &format!("{} Модпак", provider.as_str()),
-                ))
+                    "Готов",
+                );
+                inst.modpack_provider = provider.as_str().to_string();
+                inst.modpack_id = pack_id.to_string();
+                inst.modpack_version_id = ftb_ver_id;
+                inst.modpack_version_name = ftb_ver_name;
+                Ok(inst)
             }
         }
     }
@@ -991,7 +1045,7 @@ impl MetaClient {
         tokio::fs::create_dir_all(&instance_mc_dir).await?;
 
         let archive_path = if clean.starts_with("http://") || clean.starts_with("https://") {
-            log_cb(format!("[Импорт] Скачивание архива модпака по ссылке: {}...", clean));
+            log_cb(format!("[Import] Downloading modpack archive from URL: {}...", clean));
             let bytes = self
                 .http
                 .get(clean)
@@ -1111,7 +1165,7 @@ impl MetaClient {
 
         if !file_downloads.is_empty() {
             log_cb(format!(
-                "[Модпак] Скачивание {} модов и ресурсов сборки «{}» (MC {} | {} {})...",
+                "[Modpack] Downloading {} mods & assets for '{}' (MC {} | {} {})...",
                 file_downloads.len(),
                 pack_name,
                 mc_version,
@@ -1124,22 +1178,165 @@ impl MetaClient {
         Ok(Instance::new_default(
             inst_id.to_string(),
             if pack_name.trim().is_empty() {
-                format!("Модпак {}", mc_version)
+                format!("Pack {}", mc_version)
             } else {
                 pack_name
             },
-            if custom_group.trim().is_empty() {
-                "Модпаки".to_string()
-            } else {
-                custom_group.to_string()
-            },
+            custom_group.trim().to_string(),
             mc_version,
             loader,
             loader_version,
             false,
             None,
-            "Модпак установлен",
+            "Готов",
         ))
+    }
+
+    /// Fetch the primary file `(filename, download_url)` for a specific Modrinth version_id or CurseForge file_id.
+    pub async fn fetch_specific_version_download(
+        &self,
+        provider: &str,
+        project_id: &str,
+        version_id: &str,
+    ) -> Result<(String, String)> {
+        if provider.eq_ignore_ascii_case("CurseForge") {
+            let url = format!(
+                "https://api.curseforge.com/v1/mods/{}/files/{}",
+                project_id, version_id
+            );
+            let resp = self
+                .http
+                .get(&url)
+                .header("x-api-key", &self.curseforge_key)
+                .send()
+                .await?;
+            if !resp.status().is_success() {
+                return Err(anyhow!("CurseForge file lookup HTTP {}", resp.status()));
+            }
+            let json: serde_json::Value = resp.json().await?;
+            let data = &json["data"];
+            let filename = data["fileName"]
+                .as_str()
+                .unwrap_or("file.jar")
+                .to_string();
+            let dl_url = data["downloadUrl"]
+                .as_str()
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string())
+                .ok_or_else(|| anyhow!("CurseForge blocked direct download for this file"))?;
+            return Ok((filename, dl_url));
+        }
+
+        let url = format!("https://api.modrinth.com/v2/version/{}", version_id);
+        let resp = self.http.get(&url).send().await?;
+        if !resp.status().is_success() {
+            return Err(anyhow!("Modrinth version lookup HTTP {}", resp.status()));
+        }
+        let v: serde_json::Value = resp.json().await?;
+        let files = v["files"]
+            .as_array()
+            .ok_or_else(|| anyhow!("No files in Modrinth version {}", version_id))?;
+        let chosen = files
+            .iter()
+            .find(|f| f["primary"].as_bool().unwrap_or(false))
+            .or_else(|| files.first())
+            .ok_or_else(|| anyhow!("Empty file list in Modrinth version {}", version_id))?;
+        let filename = chosen["filename"]
+            .as_str()
+            .unwrap_or("asset.jar")
+            .to_string();
+        let dl_url = chosen["url"]
+            .as_str()
+            .ok_or_else(|| anyhow!("Missing download URL in Modrinth version"))?
+            .to_string();
+        Ok((filename, dl_url))
+    }
+
+    /// Update or rollback an existing modpack instance to a specific version_id while preserving `saves/`.
+    pub async fn apply_modpack_version_to_dir<FLog>(
+        &self,
+        provider: &str,
+        pack_id: &str,
+        version_id: &str,
+        inst_id: &str,
+        inst_name: &str,
+        inst_group: &str,
+        instance_mc_dir: &Path,
+        log_cb: FLog,
+    ) -> Result<Option<(String, LoaderType, String)>>
+    where
+        FLog: Fn(String) + Send + Sync + 'static,
+    {
+        // Clear old mods before applying new modpack version (preserves saves/, screenshots/, options.txt)
+        let mods_dir = instance_mc_dir.join("mods");
+        if mods_dir.is_dir() {
+            let _ = tokio::fs::remove_dir_all(&mods_dir).await;
+            let _ = tokio::fs::create_dir_all(&mods_dir).await;
+        }
+
+        if provider.eq_ignore_ascii_case("FTB") {
+            let ver_url = format!(
+                "https://api.modpacks.ch/public/modpack/{}/{}",
+                pack_id, version_id
+            );
+            let resp = self.http.get(&ver_url).send().await?;
+            let vj: serde_json::Value = resp.json().await?;
+            if let Some(files) = vj["files"].as_array() {
+                log_cb(format!(
+                    "[FTB Modpack] Downloading {} files for version {}...",
+                    files.len(),
+                    version_id
+                ));
+                let mut tasks = Vec::new();
+                for f in files.iter().take(120) {
+                    let path_str = f["path"].as_str().unwrap_or("./");
+                    let name_str = f["name"].as_str().unwrap_or("");
+                    let url_str = f["url"].as_str().unwrap_or("");
+                    if !name_str.is_empty() && !url_str.is_empty() {
+                        let clean_p = path_str.trim_start_matches("./").trim_start_matches('/');
+                        let dest = instance_mc_dir.join(clean_p).join(name_str);
+                        tasks.push((url_str.to_string(), dest));
+                    }
+                }
+                self.download_modpack_files(tasks).await;
+            }
+            return Ok(None);
+        }
+
+        let (filename, dl_url) = self
+            .fetch_specific_version_download(provider, pack_id, version_id)
+            .await?;
+        log_cb(format!(
+            "[Modpack] Downloading version archive {}...",
+            filename
+        ));
+        let mut req = self.http.get(&dl_url);
+        if provider.eq_ignore_ascii_case("CurseForge") && !self.curseforge_key.is_empty() {
+            req = req.header("x-api-key", &self.curseforge_key);
+        }
+        let bytes = req.send().await?.error_for_status()?.bytes().await?;
+        let tmp_archive = instance_mc_dir
+            .parent()
+            .unwrap_or(instance_mc_dir)
+            .join(&filename);
+        tokio::fs::write(&tmp_archive, &bytes).await?;
+
+        let parsed = self
+            .extract_and_install_mrpack(
+                &tmp_archive,
+                inst_id,
+                inst_name,
+                inst_group,
+                instance_mc_dir,
+                log_cb,
+            )
+            .await?;
+        let _ = tokio::fs::remove_file(&tmp_archive).await;
+        Ok(Some((
+            parsed.mc_version,
+            parsed.loader,
+            parsed.loader_version,
+        )))
     }
 
     pub async fn search_external_asset(
@@ -1353,6 +1550,441 @@ impl MetaClient {
             })
             .collect();
         Ok(items)
+    }
+
+    /// Search Modrinth with full FreesmLauncher-style filters (sort, MC version, loader, category, side, open-source)
+    pub async fn search_modrinth_filtered(
+        &self,
+        query: &str,
+        project_type: &str,
+        filter: &CatalogFilter,
+    ) -> Result<Vec<ExternalPackItem>> {
+        let mut facets = vec![format!("[\"project_type:{}\"]", project_type)];
+        let mc_clean = filter.mc_version.trim();
+        if !mc_clean.is_empty() && mc_clean != "Все" && mc_clean != "All" {
+            facets.push(format!("[\"versions:{}\"]", mc_clean));
+        }
+        if !filter.loaders.is_empty() {
+            let parts: Vec<String> = filter
+                .loaders
+                .iter()
+                .map(|l| format!("\"categories:{}\"", l.trim().to_ascii_lowercase()))
+                .collect();
+            facets.push(format!("[{}]", parts.join(",")));
+        }
+        for cat in &filter.category_ids {
+            let c = cat.trim().to_ascii_lowercase();
+            // Skip numeric CurseForge category IDs if somehow passed to Modrinth
+            if !c.is_empty() && !c.chars().all(|ch| ch.is_ascii_digit()) {
+                facets.push(format!("[\"categories:{}\"]", c));
+            }
+        }
+        if filter.client_side && !filter.server_side {
+            facets.push("[\"client_side:required\",\"client_side:optional\"]".to_string());
+        } else if filter.server_side && !filter.client_side {
+            facets.push("[\"server_side:required\",\"server_side:optional\"]".to_string());
+        }
+        if filter.open_source {
+            facets.push("[\"open_source:true\"]".to_string());
+        }
+
+        let index_str = match filter.sort_key.as_str() {
+            "downloads" => "downloads",
+            "updated" => "updated",
+            "newest" => "newest",
+            "follows" => "follows",
+            _ => "relevance",
+        };
+        let facets_param = format!("[{}]", facets.join(","));
+        let resp = self
+            .http
+            .get("https://api.modrinth.com/v2/search")
+            .query(&[
+                ("query", query),
+                ("limit", "25"),
+                ("index", index_str),
+                ("facets", &facets_param),
+            ])
+            .send()
+            .await
+            .context("Modrinth API search error")?
+            .error_for_status()?;
+        let data = resp.json::<ModrinthSearchResponse>().await?;
+
+        let items = data
+            .hits
+            .into_iter()
+            .map(|h| {
+                let detected_mc = h
+                    .versions
+                    .iter()
+                    .rev()
+                    .find(|v| v.starts_with("1."))
+                    .or_else(|| h.versions.last())
+                    .cloned()
+                    .unwrap_or_else(|| "1.21.1".to_string());
+                let detected_loader = if h.categories.iter().any(|c| c == "neoforge") {
+                    "NeoForge"
+                } else if h.categories.iter().any(|c| c == "forge") {
+                    "Forge"
+                } else if h.categories.iter().any(|c| c == "quilt") {
+                    "Quilt"
+                } else {
+                    "Fabric"
+                };
+                ExternalPackItem {
+                    id: h.project_id,
+                    provider: "Modrinth".to_string(),
+                    title: h.title,
+                    author: h.author,
+                    description: h.description,
+                    downloads: format!("{}", h.downloads),
+                    mc_version: detected_mc,
+                    loader: detected_loader.to_string(),
+                    download_url: None,
+                    icon_url: h.icon_url.unwrap_or_default(),
+                }
+            })
+            .collect();
+        Ok(items)
+    }
+
+    /// Search CurseForge with FreesmLauncher-style filters
+    pub async fn search_curseforge_filtered(
+        &self,
+        query: &str,
+        class_id: u32,
+        filter: &CatalogFilter,
+    ) -> Result<Vec<ExternalPackItem>> {
+        let key = self.curseforge_key.trim();
+        let mc_clean = filter.mc_version.trim();
+        let mc_opt = if !mc_clean.is_empty() && mc_clean != "Все" && mc_clean != "All" {
+            Some(mc_clean)
+        } else {
+            None
+        };
+        if !key.is_empty() {
+            let mut params: Vec<(&str, String)> = vec![
+                ("gameId", "432".to_string()),
+                ("classId", class_id.to_string()),
+                ("pageSize", "25".to_string()),
+            ];
+            let sort_field = match filter.sort_key.as_str() {
+                "downloads" => "6",  // TotalDownloads
+                "updated" => "3",    // LastUpdated
+                "newest" => "11",    // ReleasedDate
+                "relevance" => "1",  // Featured
+                _ => "2",            // Popularity
+            };
+            params.push(("sortField", sort_field.to_string()));
+            params.push(("sortOrder", "desc".to_string()));
+            if !query.trim().is_empty() {
+                params.push(("searchFilter", query.trim().to_string()));
+            }
+            if let Some(v) = mc_opt {
+                params.push(("gameVersion", v.to_string()));
+            }
+            let ld_type = filter
+                .loaders
+                .first()
+                .and_then(|l| match l.trim().to_ascii_lowercase().as_str() {
+                    "forge" => Some("1"),
+                    "fabric" => Some("4"),
+                    "quilt" => Some("5"),
+                    "neoforge" => Some("6"),
+                    _ => None,
+                });
+            if let Some(lt) = ld_type {
+                params.push(("modLoaderType", lt.to_string()));
+            }
+            let cf_cats: Vec<String> = filter
+                .category_ids
+                .iter()
+                .filter_map(|c| {
+                    let trimmed = c.trim();
+                    if trimmed.chars().all(|ch| ch.is_ascii_digit()) && !trimmed.is_empty() {
+                        Some(trimmed.to_string())
+                    } else {
+                        // Map Modrinth slug to CurseForge category ID when searching "Оба"
+                        match (class_id, trimmed) {
+                            (6, "adventure") => Some("422".to_string()),
+                            (6, "technology") => Some("423".to_string()),
+                            (6, "magic") => Some("419".to_string()),
+                            (6, "library") => Some("421".to_string()),
+                            (6, "storage") => Some("420".to_string()),
+                            (6, "food") => Some("436".to_string()),
+                            (6, "mobs") => Some("414".to_string()),
+                            (6, "worldgen") => Some("406".to_string()),
+                            (6, "decoration") => Some("424".to_string()),
+                            (6, "equipment") => Some("434".to_string()),
+                            (6, "utility") => Some("435".to_string()),
+                            (6, "optimization") => Some("467".to_string()),
+                            (4471, "adventure") => Some("4475".to_string()),
+                            (4471, "technology") => Some("4472".to_string()),
+                            (4471, "magic") => Some("4473".to_string()),
+                            (4471, "quests") => Some("4478".to_string()),
+                            (4471, "challenging") => Some("4479".to_string()),
+                            (4471, "lightweight") => Some("4481".to_string()),
+                            (4471, "combat") => Some("4483".to_string()),
+                            (4471, "multiplayer") => Some("4484".to_string()),
+                            (12, "vanilla-like") => Some("403".to_string()),
+                            (12, "modded") => Some("4465".to_string()),
+                            (6552, "realistic") => Some("6553".to_string()),
+                            (6552, "fantasy") => Some("6554".to_string()),
+                            (6552, "vanilla-like") => Some("6555".to_string()),
+                            (6945, "adventure") => Some("6946".to_string()),
+                            (6945, "magic") => Some("6948".to_string()),
+                            (6945, "technology") => Some("6949".to_string()),
+                            (6945, "utility") => Some("6950".to_string()),
+                            (6945, "worldgen") => Some("6951".to_string()),
+                            _ => None,
+                        }
+                    }
+                })
+                .collect();
+            if cf_cats.len() == 1 {
+                params.push(("categoryId", cf_cats[0].clone()));
+            } else if cf_cats.len() > 1 {
+                params.push(("categoryIds", format!("[{}]", cf_cats.join(","))));
+            }
+            if let Ok(resp) = self
+                .http
+                .get("https://api.curseforge.com/v1/mods/search")
+                .header("x-api-key", key)
+                .query(&params)
+                .send()
+                .await
+            {
+                if resp.status().is_success() {
+                    if let Ok(json) = resp.json::<serde_json::Value>().await {
+                        if let Some(arr) = json["data"].as_array() {
+                            let mut out = Vec::new();
+                            for item in arr {
+                                let id = item["id"].as_i64().unwrap_or(0).to_string();
+                                let title = item["name"].as_str().unwrap_or("").to_string();
+                                let summary = item["summary"].as_str().unwrap_or("").to_string();
+                                let downloads = item["downloadCount"].as_u64().unwrap_or(0);
+                                let author = item["authors"]
+                                    .as_array()
+                                    .and_then(|a| a.first())
+                                    .and_then(|a| a["name"].as_str())
+                                    .unwrap_or("CurseForge")
+                                    .to_string();
+                                let mc_ver = item["latestFiles"]
+                                    .as_array()
+                                    .and_then(|f| f.first())
+                                    .and_then(|f| f["gameVersions"].as_array())
+                                    .and_then(|gv| {
+                                        gv.iter()
+                                            .filter_map(|v| v.as_str())
+                                            .find(|v| v.starts_with("1."))
+                                    })
+                                    .unwrap_or("1.20.1")
+                                    .to_string();
+                                let icon_url = item["logo"]["thumbnailUrl"]
+                                    .as_str()
+                                    .filter(|s| !s.is_empty())
+                                    .or_else(|| item["logo"]["url"].as_str().filter(|s| !s.is_empty()))
+                                    .or_else(|| {
+                                        item["screenshots"]
+                                            .as_array()
+                                            .and_then(|arr| arr.first())
+                                            .and_then(|s| {
+                                                s["thumbnailUrl"]
+                                                    .as_str()
+                                                    .filter(|u| !u.is_empty())
+                                                    .or_else(|| s["url"].as_str().filter(|u| !u.is_empty()))
+                                            })
+                                    })
+                                    .unwrap_or("")
+                                    .to_string();
+                                out.push(ExternalPackItem {
+                                    id,
+                                    provider: "CurseForge".to_string(),
+                                    title,
+                                    author,
+                                    description: summary,
+                                    downloads: format!("{}", downloads),
+                                    mc_version: mc_ver,
+                                    loader: "CurseForge".to_string(),
+                                    download_url: None,
+                                    icon_url,
+                                });
+                            }
+                            if !out.is_empty() {
+                                return Ok(out);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        self.search_curseforge_by_class(query, &class_id.to_string(), mc_opt).await
+    }
+
+    /// Fetch available versions for any Modrinth / CurseForge / FTB project (mods, modpacks, resourcepacks, shaders, datapacks, worlds)
+    pub async fn fetch_project_versions(
+        &self,
+        provider: &str,
+        project_id: &str,
+        mc_version_filter: Option<&str>,
+    ) -> Result<Vec<AssetVersionInfo>> {
+        if provider == "CurseForge" {
+            let key = self.curseforge_key.trim();
+            if key.is_empty() {
+                return Err(anyhow!("CurseForge API key is required"));
+            }
+            let url = format!("https://api.curseforge.com/v1/mods/{}/files", project_id);
+            let mut params: Vec<(&str, String)> = vec![("pageSize", "40".to_string())];
+            if let Some(mc) = mc_version_filter.filter(|s| !s.is_empty() && *s != "Все" && *s != "All") {
+                params.push(("gameVersion", mc.to_string()));
+            }
+            let resp = self
+                .http
+                .get(&url)
+                .header("x-api-key", key)
+                .query(&params)
+                .send()
+                .await?
+                .error_for_status()?;
+            let json: serde_json::Value = resp.json().await?;
+            let mut out = Vec::new();
+            if let Some(arr) = json["data"].as_array() {
+                for f in arr {
+                    let id = f["id"].as_i64().unwrap_or(0).to_string();
+                    let name = f["displayName"]
+                        .as_str()
+                        .or_else(|| f["fileName"].as_str())
+                        .unwrap_or("File")
+                        .to_string();
+                    let fname = f["fileName"].as_str().unwrap_or("file.jar").to_string();
+                    let dl_url = f["downloadUrl"].as_str().unwrap_or("").to_string();
+                    if dl_url.is_empty() {
+                        continue;
+                    }
+                    let gv: Vec<String> = f["gameVersions"]
+                        .as_array()
+                        .map(|a| {
+                            a.iter()
+                                .filter_map(|v| v.as_str().map(String::from))
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    let mc_vers: Vec<String> = gv.iter().filter(|v| v.starts_with("1.") || v.starts_with("2")).cloned().collect();
+                    let loaders: Vec<String> = gv.iter().filter(|v| !v.starts_with("1.") && !v.starts_with("2")).cloned().collect();
+                    let rtype = match f["releaseType"].as_i64().unwrap_or(1) {
+                        2 => "Beta",
+                        3 => "Alpha",
+                        _ => "Release",
+                    };
+                    let date = f["fileDate"]
+                        .as_str()
+                        .unwrap_or("")
+                        .chars()
+                        .take(10)
+                        .collect();
+                    out.push(AssetVersionInfo {
+                        id,
+                        name: name.clone(),
+                        version_number: name,
+                        mc_versions: mc_vers.join(", "),
+                        loaders: loaders.join(", "),
+                        release_type: rtype.to_string(),
+                        date,
+                        filename: fname,
+                        download_url: dl_url,
+                    });
+                }
+            }
+            return Ok(out);
+        }
+
+        if provider == "FTB" {
+            let url = format!("https://api.modpacks.ch/public/modpack/{}", project_id);
+            let json: serde_json::Value = self.http.get(&url).send().await?.error_for_status()?.json().await?;
+            let mut out = Vec::new();
+            if let Some(vers) = json["versions"].as_array() {
+                for v in vers.iter().rev().take(30) {
+                    let id = v["id"].as_i64().unwrap_or(0).to_string();
+                    let name = v["name"].as_str().unwrap_or(&id).to_string();
+                    let rtype = v["type"].as_str().unwrap_or("Release").to_string();
+                    out.push(AssetVersionInfo {
+                        id: id.clone(),
+                        name: name.clone(),
+                        version_number: name,
+                        mc_versions: String::new(),
+                        loaders: "FTB".to_string(),
+                        release_type: rtype,
+                        date: String::new(),
+                        filename: format!("ftb-{}-{}.json", project_id, id),
+                        download_url: format!("https://api.modpacks.ch/public/modpack/{}/{}", project_id, id),
+                    });
+                }
+            }
+            return Ok(out);
+        }
+
+        // Default: Modrinth
+        let url = format!("https://api.modrinth.com/v2/project/{}/version", project_id);
+        let resp = self.http.get(&url).send().await?.error_for_status()?;
+        let json: serde_json::Value = resp.json().await?;
+        let mut out = Vec::new();
+        if let Some(arr) = json.as_array() {
+            for v in arr.iter().take(50) {
+                let id = v["id"].as_str().unwrap_or("").to_string();
+                let name = v["name"].as_str().unwrap_or("").to_string();
+                let ver_num = v["version_number"].as_str().unwrap_or(&name).to_string();
+                let gv: Vec<String> = v["game_versions"]
+                    .as_array()
+                    .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+                    .unwrap_or_default();
+                if let Some(mc) = mc_version_filter.filter(|s| !s.is_empty() && *s != "Все" && *s != "All") {
+                    if !gv.is_empty() && !gv.iter().any(|x| x == mc) {
+                        continue;
+                    }
+                }
+                let loaders: Vec<String> = v["loaders"]
+                    .as_array()
+                    .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+                    .unwrap_or_default();
+                let rtype = match v["version_type"].as_str().unwrap_or("release") {
+                    "beta" => "Beta",
+                    "alpha" => "Alpha",
+                    _ => "Release",
+                };
+                let date = v["date_published"]
+                    .as_str()
+                    .unwrap_or("")
+                    .chars()
+                    .take(10)
+                    .collect();
+                let file_obj = v["files"]
+                    .as_array()
+                    .and_then(|fs| fs.iter().find(|f| f["primary"].as_bool() == Some(true)).or_else(|| fs.first()));
+                let (fname, dl_url) = match file_obj {
+                    Some(f) => (
+                        f["filename"].as_str().unwrap_or("file.jar").to_string(),
+                        f["url"].as_str().unwrap_or("").to_string(),
+                    ),
+                    None => continue,
+                };
+                if dl_url.is_empty() {
+                    continue;
+                }
+                out.push(AssetVersionInfo {
+                    id,
+                    name: if name.is_empty() { ver_num.clone() } else { name },
+                    version_number: ver_num,
+                    mc_versions: gv.into_iter().take(4).collect::<Vec<_>>().join(", "),
+                    loaders: loaders.join(", "),
+                    release_type: rtype.to_string(),
+                    date,
+                    filename: fname,
+                    download_url: dl_url,
+                });
+            }
+        }
+        Ok(out)
     }
 
     /// Download and cache a catalog/news thumbnail image by SHA-1 hash of URL
@@ -1699,7 +2331,7 @@ impl MetaClient {
                                 .file_name()
                                 .and_then(|s| s.to_str())
                                 .unwrap_or("mod.jar");
-                            log_cb(format!("[Моды] Обновлён: {} → {}", old_name, new_fname));
+                            log_cb(format!("[Mods] Updated: {} -> {}", old_name, new_fname));
                             updated += 1;
                         }
                     }

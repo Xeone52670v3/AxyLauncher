@@ -1,1 +1,6 @@
 target/
+dist/
+graphify-out/
+*.AppImage
+AxyLauncher-src.zip
+.gh_token

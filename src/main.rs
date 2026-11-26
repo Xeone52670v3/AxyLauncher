@@ -314,6 +314,495 @@ fn append_log_to_ui(
     });
 }
 
+fn append_instance_log_to_ui(
+    weak: &slint::Weak<MainWindow>,
+    instance_logs: &Arc<Mutex<std::collections::HashMap<String, Vec<String>>>>,
+    config: &Arc<Mutex<LauncherConfig>>,
+    inst_id: &str,
+    msg: String,
+) {
+    use std::sync::atomic::Ordering;
+    let max_lines = LOG_MAX_LINES.load(Ordering::Relaxed).max(100);
+    let stop_overflow = LOG_STOP_ON_OVERFLOW.load(Ordering::Relaxed);
+    let rendered_line = msg.trim_end_matches('\n').to_string();
+    {
+        let mut map = instance_logs.lock().unwrap();
+        let buf = map.entry(inst_id.to_string()).or_default();
+        if stop_overflow && buf.len() >= max_lines {
+            return;
+        }
+        buf.push(rendered_line);
+        if !stop_overflow && buf.len() > max_lines {
+            let excess = buf.len() - max_lines;
+            buf.drain(0..excess);
+        }
+    }
+    let is_selected = {
+        let cfg = config.lock().unwrap();
+        cfg.selected_instance_id.as_deref() == Some(inst_id)
+    };
+    if !is_selected {
+        return;
+    }
+    let weak = weak.clone();
+    let instance_logs = instance_logs.clone();
+    let inst_id_owned = inst_id.to_string();
+    let _ = slint::invoke_from_event_loop(move || {
+        if let Some(ui) = weak.upgrade() {
+            let filter_idx = ui.get_instance_console_filter_idx();
+            let text = {
+                let map = instance_logs.lock().unwrap();
+                map.get(&inst_id_owned)
+                    .map(|buf| render_filtered_log(buf, filter_idx))
+                    .unwrap_or_default()
+            };
+            ui.set_instance_console_log(SharedString::from(text));
+        }
+    });
+}
+
+fn sync_instance_console_to_ui(
+    ui: &MainWindow,
+    instance_logs: &Arc<Mutex<std::collections::HashMap<String, Vec<String>>>>,
+    inst_id: &str,
+) {
+    let filter_idx = ui.get_instance_console_filter_idx();
+    let text = {
+        let map = instance_logs.lock().unwrap();
+        map.get(inst_id)
+            .map(|buf| render_filtered_log(buf, filter_idx))
+            .unwrap_or_default()
+    };
+    ui.set_instance_console_log(SharedString::from(text));
+}
+
+fn make_filter_rows(items: &[(&str, &str)]) -> ModelRc<UiFilterRow> {
+    let mut rows = Vec::new();
+    for chunk in items.chunks(5) {
+        let chips: Vec<UiFilterChip> = chunk
+            .iter()
+            .map(|(id, label)| UiFilterChip {
+                id: (*id).into(),
+                label: (*label).into(),
+                selected: false,
+            })
+            .collect();
+        rows.push(UiFilterRow {
+            chips: ModelRc::from(Rc::new(VecModel::from(chips))),
+        });
+    }
+    ModelRc::from(Rc::new(VecModel::from(rows)))
+}
+
+fn apply_catalog_filter_preset(ui: &MainWindow, kind: &str, provider_idx: i32) {
+    let is_modpack = kind == "modpack";
+    // For modpack: 0=Modrinth, 1=CurseForge, 2=FTB, 3=Technic, 4=ATLauncher
+    // For assets:  0=Modrinth, 1=CurseForge, 2=Оба
+    let is_cf = provider_idx == 1;
+    let is_mr_or_both = provider_idx == 0 || (!is_modpack && provider_idx == 2);
+
+    let sort_opts: Vec<SharedString> = if is_cf {
+        vec![
+            "Популярность".into(),
+            "Загрузки".into(),
+            "Обновлено".into(),
+            "Новые".into(),
+            "Релевантность".into(),
+        ]
+    } else if is_mr_or_both {
+        vec![
+            "Релевантность".into(),
+            "Загрузки".into(),
+            "Подписчики".into(),
+            "Обновлено".into(),
+            "Новые".into(),
+        ]
+    } else {
+        vec!["Популярность".into()]
+    };
+    let default_sort = sort_opts.first().cloned().unwrap_or_else(|| "Релевантность".into());
+    ui.set_catalog_sort_options(ModelRc::from(Rc::new(VecModel::from(sort_opts))));
+    ui.set_catalog_filter_sort(default_sort);
+    ui.set_catalog_filter_mc("Все".into());
+    ui.set_catalog_filter_open_source(false);
+    ui.set_catalog_flt_client(false);
+    ui.set_catalog_flt_server(false);
+
+    ui.set_catalog_supports_mc(is_cf || is_mr_or_both);
+    ui.set_catalog_supports_os(is_mr_or_both);
+    ui.set_catalog_supports_side(is_mr_or_both && (kind == "mod" || kind == "modpack"));
+
+    let loader_items: Vec<(&str, &str)> = if !(is_cf || is_mr_or_both) {
+        vec![]
+    } else if kind == "mod" || kind == "modpack" {
+        vec![
+            ("fabric", "Fabric"),
+            ("forge", "Forge"),
+            ("neoforge", "NeoForge"),
+            ("quilt", "Quilt"),
+        ]
+    } else if kind == "shader" && is_mr_or_both {
+        vec![
+            ("iris", "Iris"),
+            ("optifine", "OptiFine"),
+            ("canvas", "Canvas"),
+            ("vanilla", "Vanilla"),
+        ]
+    } else {
+        vec![]
+    };
+    let loader_chips: Vec<UiFilterChip> = loader_items
+        .into_iter()
+        .map(|(id, label)| UiFilterChip {
+            id: id.into(),
+            label: label.into(),
+            selected: false,
+        })
+        .collect();
+    ui.set_catalog_loader_chips(ModelRc::from(Rc::new(VecModel::from(loader_chips))));
+
+    let cats: &[(&str, &str)] = if is_cf {
+        match kind {
+            "mod" => &[
+                ("422", "Приключения"),
+                ("423", "Технологии"),
+                ("419", "Магия"),
+                ("421", "Библиотеки"),
+                ("420", "Хранение"),
+                ("436", "Еда"),
+                ("414", "Мобы"),
+                ("406", "Миры"),
+                ("424", "Декор"),
+                ("434", "Снаряжение"),
+                ("435", "Утилиты"),
+                ("409", "Редстоун"),
+                ("417", "Карты и инфо"),
+                ("467", "Оптимизация"),
+            ],
+            "modpack" => &[
+                ("4475", "Приключения"),
+                ("4472", "Технологии"),
+                ("4473", "Магия"),
+                ("4478", "Квесты"),
+                ("4479", "Хардкор"),
+                ("4481", "Лёгкие"),
+                ("4483", "Бой"),
+                ("4484", "Мультиплеер"),
+                ("4487", "Skyblock"),
+                ("4476", "Исследование"),
+                ("4480", "С картой"),
+                ("4477", "Мини-игры"),
+            ],
+            "resourcepack" => &[
+                ("393", "16x"),
+                ("394", "32x"),
+                ("395", "64x"),
+                ("396", "128x"),
+                ("397", "256x"),
+                ("398", "512x+"),
+                ("403", "Ванильные"),
+                ("400", "Стимпанк"),
+                ("401", "Модерн"),
+                ("404", "Средневековье"),
+                ("405", "Анимированные"),
+                ("4465", "Для модов"),
+                ("5193", "Шрифты"),
+            ],
+            "shader" => &[
+                ("6553", "Реалистичные"),
+                ("6554", "Фэнтези"),
+                ("6555", "Ванильные"),
+            ],
+            "datapack" => &[
+                ("6946", "Приключения"),
+                ("6948", "Магия"),
+                ("6949", "Технологии"),
+                ("6950", "Утилиты"),
+                ("6951", "Миры"),
+                ("6952", "Разное"),
+            ],
+            "world" => &[
+                ("248", "Приключения"),
+                ("249", "Творчество"),
+                ("250", "Игровые карты"),
+                ("251", "С модами"),
+                ("252", "Паркур"),
+                ("253", "Головоломки"),
+                ("254", "Выживание"),
+            ],
+            _ => &[],
+        }
+    } else if is_mr_or_both {
+        match kind {
+            "mod" => &[
+                ("optimization", "Оптимизация"),
+                ("technology", "Технологии"),
+                ("magic", "Магия"),
+                ("adventure", "Приключения"),
+                ("utility", "Утилиты"),
+                ("decoration", "Декор"),
+                ("library", "Библиотеки"),
+                ("food", "Еда"),
+                ("cursed", "Проклятые"),
+                ("equipment", "Снаряжение"),
+                ("storage", "Хранение"),
+                ("mobs", "Мобы"),
+                ("worldgen", "Миры"),
+                ("economy", "Экономика"),
+                ("social", "Социальное"),
+                ("minigame", "Мини-игры"),
+                ("game-mechanics", "Механики"),
+                ("management", "Управление"),
+                ("transportation", "Транспорт"),
+            ],
+            "modpack" => &[
+                ("optimization", "Оптимизация"),
+                ("technology", "Технологии"),
+                ("magic", "Магия"),
+                ("adventure", "Приключения"),
+                ("quests", "Квесты"),
+                ("challenging", "Сложные"),
+                ("combat", "Бой"),
+                ("lightweight", "Лёгкие"),
+                ("multiplayer", "Мультиплеер"),
+                ("kitchen-sink", "Сборная солянка"),
+            ],
+            "resourcepack" => &[
+                ("vanilla-like", "Ванильные"),
+                ("realistic", "Реалистичные"),
+                ("simplistic", "Упрощённые"),
+                ("themed", "Тематические"),
+                ("tweaks", "Твики"),
+                ("decoration", "Декор"),
+                ("modded", "Для модов"),
+                ("utility", "Утилиты"),
+                ("combat", "Бой"),
+                ("cursed", "Проклятые"),
+            ],
+            "shader" => &[
+                ("realistic", "Реалистичные"),
+                ("semi-realistic", "Полуреалистичные"),
+                ("vanilla-like", "Ванильные"),
+                ("fantasy", "Фэнтези"),
+                ("cartoon", "Мультяшные"),
+                ("potato", "Для слабых ПК"),
+                ("path-tracing", "Трассировка лучей"),
+                ("pbr", "PBR"),
+                ("shadows", "Тени"),
+                ("reflections", "Отражения"),
+                ("atmosphere", "Атмосфера"),
+                ("bloom", "Свечение"),
+                ("foliage", "Растительность"),
+                ("cursed", "Проклятые"),
+            ],
+            "datapack" => &[
+                ("adventure", "Приключения"),
+                ("worldgen", "Миры"),
+                ("magic", "Магия"),
+                ("technology", "Технологии"),
+                ("utility", "Утилиты"),
+                ("optimization", "Оптимизация"),
+                ("decoration", "Декор"),
+                ("equipment", "Снаряжение"),
+                ("food", "Еда"),
+                ("mobs", "Мобы"),
+                ("storage", "Хранение"),
+                ("economy", "Экономика"),
+                ("minigame", "Мини-игры"),
+                ("game-mechanics", "Механики"),
+                ("cursed", "Проклятые"),
+            ],
+            _ => &[],
+        }
+    } else {
+        &[]
+    };
+    ui.set_catalog_category_rows(make_filter_rows(cats));
+}
+
+fn read_catalog_filter_from_ui(ui: &MainWindow) -> meta::CatalogFilter {
+    let sort_key = match ui.get_catalog_filter_sort().as_str() {
+        "Загрузки" => "downloads",
+        "Обновлено" => "updated",
+        "Новые" => "newest",
+        "Подписчики" => "follows",
+        "Популярность" => "popularity",
+        _ => "relevance",
+    }
+    .to_string();
+
+    let mc_raw = ui.get_catalog_filter_mc().to_string();
+    let mc_version = if mc_raw.trim().is_empty() || mc_raw == "Все" {
+        String::new()
+    } else {
+        mc_raw
+    };
+
+    let mut loaders = Vec::new();
+    let lmodel = ui.get_catalog_loader_chips();
+    for i in 0..lmodel.row_count() {
+        if let Some(chip) = lmodel.row_data(i) {
+            if chip.selected {
+                loaders.push(chip.id.to_string());
+            }
+        }
+    }
+
+    let mut category_ids = Vec::new();
+    let rmodel = ui.get_catalog_category_rows();
+    for r in 0..rmodel.row_count() {
+        if let Some(row) = rmodel.row_data(r) {
+            for c in 0..row.chips.row_count() {
+                if let Some(chip) = row.chips.row_data(c) {
+                    if chip.selected {
+                        category_ids.push(chip.id.to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    meta::CatalogFilter {
+        sort_key,
+        mc_version,
+        loaders,
+        category_ids,
+        client_side: ui.get_catalog_flt_client(),
+        server_side: ui.get_catalog_flt_server(),
+        open_source: ui.get_catalog_filter_open_source(),
+    }
+}
+
+fn open_modpack_download_modal(ui: &MainWindow, title: &str, provider: &str) {
+    ui.set_download_modal_title("Загрузка сборки".into());
+    ui.set_download_modal_subtitle(format!("{} • {}", title, provider).into());
+    ui.set_download_modal_status("Скачивание и распаковка модпака...".into());
+    ui.set_download_modal_progress(0.08);
+    ui.set_download_modal_done(false);
+    ui.set_download_modal_error(false);
+    ui.set_show_download_modal(true);
+    ui.set_is_busy(true);
+    ui.set_launch_progress(0.08);
+    ui.set_status_is_error(false);
+    ui.set_status_text(format!("Загрузка сборки «{}»...", title).into());
+}
+
+async fn finalize_modpack_instance_and_prepare(
+    ui_weak: slint::Weak<MainWindow>,
+    config: Arc<Mutex<LauncherConfig>>,
+    data_dir: PathBuf,
+    meta: Arc<MetaClient>,
+    log_buf: Arc<Mutex<Vec<String>>>,
+    mut inst: Instance,
+    provider: ExternalProvider,
+    pid: String,
+    instances_dir: PathBuf,
+    icons_dir: PathBuf,
+) {
+    let icon_save = icons_dir.join(format!("pack_{}", inst.id));
+    if let Some(saved_icon) = meta
+        .fetch_external_modpack_icon(provider, &pid, &inst.name, &icon_save)
+        .await
+    {
+        inst.custom_icon_path = saved_icon.to_string_lossy().to_string();
+    }
+    write_instance_cfg(&instances_dir, &inst);
+
+    let inst_name = inst.name.clone();
+    let inst_clone = inst.clone();
+    let cfg_snapshot = {
+        let mut cfg = config.lock().unwrap();
+        cfg.selected_instance_id = Some(inst.id.clone());
+        cfg.instances.push(inst);
+        save_config(&data_dir, &cfg);
+        let cfg_clone = cfg.clone();
+        let w = ui_weak.clone();
+        let _ = slint::invoke_from_event_loop(move || {
+            if let Some(ui) = w.upgrade() {
+                sync_ui_from_config(&ui, &cfg_clone);
+                ui.set_download_modal_progress(0.45);
+                ui.set_launch_progress(0.45);
+                ui.set_download_modal_status("Подготовка и скачивание файлов Minecraft...".into());
+            }
+        });
+        cfg.clone()
+    };
+
+    let w_log = ui_weak.clone();
+    let lb_log = log_buf.clone();
+    let w_prog = ui_weak.clone();
+    let res = launcher::prepare_instance(
+        meta,
+        cfg_snapshot,
+        inst_clone,
+        data_dir,
+        move |line| {
+            append_log_to_ui(&w_log, &lb_log, line);
+        },
+        move |p, msg| {
+            let scaled = 0.45 + p.clamp(0.0, 1.0) * 0.55;
+            let w = w_prog.clone();
+            let _ = slint::invoke_from_event_loop(move || {
+                if let Some(ui) = w.upgrade() {
+                    ui.set_download_modal_progress(scaled);
+                    ui.set_download_modal_status(msg.clone().into());
+                    ui.set_launch_progress(scaled);
+                    ui.set_status_text(msg.into());
+                }
+            });
+        },
+    )
+    .await;
+
+    match res {
+        Ok(()) => {
+            let w = ui_weak.clone();
+            let done_name = inst_name.clone();
+            let _ = slint::invoke_from_event_loop(move || {
+                if let Some(ui) = w.upgrade() {
+                    ui.set_download_modal_progress(1.0);
+                    ui.set_download_modal_done(true);
+                    ui.set_download_modal_error(false);
+                    ui.set_download_modal_status(
+                        format!(
+                            "Сборка «{}» полностью загружена и готова к запуску!",
+                            done_name
+                        )
+                        .into(),
+                    );
+                    ui.set_is_busy(false);
+                    ui.set_launch_progress(0.0);
+                    ui.set_status_is_error(false);
+                    ui.set_status_text(
+                        format!("Сборка «{}» готова к запуску", done_name).into(),
+                    );
+                }
+            });
+            append_log_to_ui(
+                &ui_weak,
+                &log_buf,
+                format!("[Modpack] Instance '{}' installed and prepared.", inst_name),
+            );
+        }
+        Err(e) => {
+            let err_msg = format!("Ошибка загрузки сборки: {}", e);
+            append_log_to_ui(&ui_weak, &log_buf, err_msg.clone());
+            let w = ui_weak.clone();
+            let _ = slint::invoke_from_event_loop(move || {
+                if let Some(ui) = w.upgrade() {
+                    ui.set_download_modal_error(true);
+                    ui.set_download_modal_done(false);
+                    ui.set_download_modal_status(err_msg.clone().into());
+                    ui.set_is_busy(false);
+                    ui.set_launch_progress(0.0);
+                    ui.set_status_is_error(true);
+                    ui.set_status_text(err_msg.into());
+                }
+            });
+        }
+    }
+}
+
 fn scan_installed_mods(instances_dir: &PathBuf, inst_id: &str) -> Vec<UiInstalledMod> {
     let mods_dir = instances_dir
         .join(inst_id)
@@ -1177,6 +1666,14 @@ fn load_instance_into_editor(ui: &MainWindow, cfg: &LauncherConfig, data_dir: &P
     ui.set_edit_inst_name(inst.name.clone().into());
     ui.set_edit_inst_folder_name(inst.id.clone().into());
     ui.set_edit_inst_group(inst.group.clone().into());
+    ui.set_edit_modpack_provider(inst.modpack_provider.clone().into());
+    ui.set_edit_modpack_id(inst.modpack_id.clone().into());
+    ui.set_edit_modpack_current_ver_id(inst.modpack_version_id.clone().into());
+    ui.set_edit_modpack_current_ver_name(inst.modpack_version_name.clone().into());
+    ui.set_edit_modpack_update_available(false);
+    ui.set_edit_modpack_latest_ver_name("".into());
+    ui.set_edit_modpack_latest_ver_id("".into());
+    ui.set_edit_modpack_versions(ModelRc::from(Rc::new(VecModel::<UiAssetVersion>::default())));
     ui.set_edit_inst_mc(inst.mc_version.clone().into());
     ui.set_edit_inst_loader_idx(inst.loader.to_index());
     ui.set_edit_inst_loader_ver(inst.loader_version.clone().into());
@@ -1196,6 +1693,23 @@ fn load_instance_into_editor(ui: &MainWindow, cfg: &LauncherConfig, data_dir: &P
     ui.set_edit_custom_loader_name(inst.custom_loader_name.clone().into());
     ui.set_edit_custom_loader_path(inst.custom_loader_path.clone().into());
     ui.set_edit_custom_loader_main_class(inst.custom_loader_main_class.clone().into());
+    let mut comp_inst = inst.clone();
+    comp_inst.ensure_default_components();
+    let ui_comps: Vec<UiInstanceComponent> = comp_inst
+        .components
+        .iter()
+        .map(|c| UiInstanceComponent {
+            uid: c.uid.clone().into(),
+            name: c.name.clone().into(),
+            version: c.version.clone().into(),
+            kind: c.kind.as_str().into(),
+            enabled: c.enabled,
+            customized: c.customized,
+            file_path: c.file_path.clone().into(),
+            extra_args: c.extra_args.clone().into(),
+        })
+        .collect();
+    ui.set_edit_components(ModelRc::from(Rc::new(VecModel::from(ui_comps))));
     ui.set_edit_inst_notes(inst.notes.clone().into());
     ui.set_edit_enable_auto_join(inst.enable_auto_join);
     ui.set_edit_inst_quick_server(inst.quick_play_server.clone().into());
@@ -1396,7 +1910,7 @@ fn main() -> Result<()> {
     };
 
     let log_buf: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(vec![
-        "[AxyLauncher] Лаунчер запущен.".to_string(),
+        "[AxyLauncher] Launcher started.".to_string(),
     ]));
     let active_kill_tx: Arc<Mutex<Option<tokio::sync::oneshot::Sender<()>>>> =
         Arc::new(Mutex::new(None));
@@ -1520,6 +2034,8 @@ fn main() -> Result<()> {
             }),
         )
     };
+    let instance_logs: Arc<Mutex<std::collections::HashMap<String, Vec<String>>>> =
+        Arc::new(Mutex::new(std::collections::HashMap::new()));
     {
         let cfg_guard = config.lock().unwrap();
         sync_ui_from_config(&ui, &cfg_guard);
@@ -1581,7 +2097,7 @@ fn main() -> Result<()> {
             append_log_to_ui(
                 &ui_weak,
                 &log_buf,
-                "[Настройка] Начальная настройка завершена.".to_string(),
+                "[Setup] Initial setup completed.".to_string(),
             );
         });
     }
@@ -1686,11 +2202,11 @@ fn main() -> Result<()> {
                 if let Some(chosen) = pick_native_file("Выберите иконку сборки (PNG / JPG / WebP)", false) {
                     let src = PathBuf::from(&chosen);
                     let Ok(bytes) = std::fs::read(&src) else {
-                        append_log_to_ui(&ui_weak, &log_buf, "[Иконки] Ошибка чтения файла иконки.".to_string());
+                        append_log_to_ui(&ui_weak, &log_buf, "[Icons] Failed to read icon file.".to_string());
                         return;
                     };
                     let Some(ext) = crate::instance_icons::detect_image_ext(&bytes) else {
-                        append_log_to_ui(&ui_weak, &log_buf, "[Иконки] Неподдерживаемый формат изображения (PNG/JPG/WebP/SVG).".to_string());
+                        append_log_to_ui(&ui_weak, &log_buf, "[Icons] Unsupported image format (PNG/JPG/WebP/SVG).".to_string());
                         return;
                     };
                     let inst_icons_dir = config.lock().unwrap().resolve_instance_icons_dir(&data_dir);
@@ -1701,7 +2217,7 @@ fn main() -> Result<()> {
                         .unwrap_or(0);
                     let dest = inst_icons_dir.join(format!("inst_{}.{}", ts, ext));
                     if let Err(e) = std::fs::write(&dest, &bytes) {
-                        append_log_to_ui(&ui_weak, &log_buf, format!("[Иконки] Ошибка сохранения: {}", e));
+                        append_log_to_ui(&ui_weak, &log_buf, format!("[Icons] Save error: {}", e));
                         return;
                     }
                     let dest_str = dest.to_string_lossy().to_string();
@@ -1739,7 +2255,7 @@ fn main() -> Result<()> {
                             }
                         }
                     });
-                    append_log_to_ui(&ui_weak, &log_buf, "[Иконки] Своя иконка сборки применена и сохранена.".to_string());
+                    append_log_to_ui(&ui_weak, &log_buf, "[Icons] Custom instance icon applied and saved.".to_string());
                 }
             });
         });
@@ -1807,9 +2323,9 @@ fn main() -> Result<()> {
                                     sync_ui_from_config(&ui, &cfg);
                                 }
                             });
-                            append_log_to_ui(&ui_weak, &log_buf, format!("[Иконки] Импортирован пак иконок «{}».", pack_name));
+                            append_log_to_ui(&ui_weak, &log_buf, format!("[Icons] Imported icon pack '{}'.", pack_name));
                         }
-                        Err(e) => append_log_to_ui(&ui_weak, &log_buf, format!("[Иконки] Ошибка импорта пака: {}", e)),
+                        Err(e) => append_log_to_ui(&ui_weak, &log_buf, format!("[Icons] Pack import error: {}", e)),
                     }
                 }
             });
@@ -1831,7 +2347,7 @@ fn main() -> Result<()> {
                     let src = PathBuf::from(&chosen);
                     let Ok(bytes) = std::fs::read(&src) else { return; };
                     let Some(ext) = crate::instance_icons::detect_image_ext(&bytes) else {
-                        append_log_to_ui(&ui_weak, &log_buf, "[Иконки] Неподдерживаемый формат изображения (PNG/JPG/WebP/SVG).".to_string());
+                        append_log_to_ui(&ui_weak, &log_buf, "[Icons] Unsupported image format (PNG/JPG/WebP/SVG).".to_string());
                         return;
                     };
                     let icons_dir = config.lock().unwrap().resolve_icons_dir(&data_dir);
@@ -1841,7 +2357,7 @@ fn main() -> Result<()> {
                         let valid = slint::Image::load_from_path(&dest).is_ok();
                         if !valid {
                             let _ = std::fs::remove_file(&dest);
-                            append_log_to_ui(&ui_weak, &log_buf, "[Иконки] Не удалось декодировать выбранное изображение.".to_string());
+                            append_log_to_ui(&ui_weak, &log_buf, "[Icons] Failed to decode selected image.".to_string());
                             return;
                         }
                         for old in ["app_logo.png", "app_logo.jpg", "app_logo.webp", "app_logo.svg", "app_logo.gif"] {
@@ -1857,7 +2373,7 @@ fn main() -> Result<()> {
                                 sync_ui_from_config(&ui, &cfg);
                             }
                         });
-                        append_log_to_ui(&ui_weak, &log_buf, "[Иконки] Логотип лаунчера обновлён.".to_string());
+                        append_log_to_ui(&ui_weak, &log_buf, "[Icons] Launcher logo updated.".to_string());
                     }
                 }
             });
@@ -1877,7 +2393,7 @@ fn main() -> Result<()> {
                 let cfg = config.lock().unwrap();
                 sync_ui_from_config(&ui, &cfg);
             }
-            append_log_to_ui(&ui_weak, &log_buf, "[Иконки] Логотип лаунчера сброшен на стандартный.".to_string());
+            append_log_to_ui(&ui_weak, &log_buf, "[Icons] Launcher logo reset to default.".to_string());
         });
     }
     {
@@ -1925,6 +2441,147 @@ fn main() -> Result<()> {
             }
         });
     }
+
+    // Check launcher updates via GitHub Releases API (Xeone52670v3/AxyLauncher)
+    {
+        const APP_VERSION: &str = "0.1";
+        const GITHUB_REPO: &str = "Xeone52670v3/AxyLauncher";
+
+        fn parse_ver_tuple(raw: &str) -> Vec<u64> {
+            let clean = raw.trim().trim_start_matches(['v', 'V']);
+            let core = clean.split(['-', '+']).next().unwrap_or(clean);
+            let mut parts: Vec<u64> = core
+                .split('.')
+                .map(|p| p.parse::<u64>().unwrap_or(0))
+                .collect();
+            while parts.len() > 1 && *parts.last().unwrap_or(&0) == 0 {
+                parts.pop();
+            }
+            parts
+        }
+
+        let ui_weak = ui.as_weak();
+        let rt = rt.clone();
+        let meta_holder = meta_holder.clone();
+        let log_buf = log_buf.clone();
+
+        ui.on_check_launcher_updates(move || {
+            if let Some(ui) = ui_weak.upgrade() {
+                ui.set_update_checking(true);
+                ui.set_update_available(false);
+                ui.set_update_latest_url("".into());
+                ui.set_update_status(i18n::translate_current("Проверка...").into());
+            }
+            let meta = current_meta(&meta_holder);
+            let ui_weak = ui_weak.clone();
+            let log_buf = log_buf.clone();
+
+            rt.spawn(async move {
+                let api_url = format!("https://api.github.com/repos/{}/releases/latest", GITHUB_REPO);
+                let repo_releases_url = format!("https://github.com/{}/releases", GITHUB_REPO);
+                let resp = meta
+                    .http()
+                    .get(&api_url)
+                    .header("Accept", "application/vnd.github+json")
+                    .header("User-Agent", format!("AxyLauncher/{}", APP_VERSION))
+                    .send()
+                    .await;
+
+                match resp {
+                    Ok(r) if r.status().as_u16() == 404 => {
+                        let msg = format!(
+                            "Релизов на GitHub пока нет. Текущая версия: v{}",
+                            APP_VERSION
+                        );
+                        append_log_to_ui(&ui_weak, &log_buf, format!("[Update] {}", msg));
+                        let _ = slint::invoke_from_event_loop(move || {
+                            if let Some(ui) = ui_weak.upgrade() {
+                                ui.set_update_checking(false);
+                                ui.set_update_available(false);
+                                ui.set_update_latest_url(repo_releases_url.into());
+                                ui.set_update_status(msg.into());
+                            }
+                        });
+                    }
+                    Ok(r) if r.status().is_success() => {
+                        match r.json::<serde_json::Value>().await {
+                            Ok(json) => {
+                                let tag = json
+                                    .get("tag_name")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("")
+                                    .to_string();
+                                let html_url = json
+                                    .get("html_url")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or(&repo_releases_url)
+                                    .to_string();
+
+                                let cur_v = parse_ver_tuple(APP_VERSION);
+                                let latest_v = parse_ver_tuple(&tag);
+                                let is_newer = !tag.is_empty() && latest_v > cur_v;
+                                let msg = if is_newer {
+                                    format!(
+                                        "Доступно обновление: {} (текущая v{})",
+                                        tag, APP_VERSION
+                                    )
+                                } else if tag.is_empty() {
+                                    format!("Установлена актуальная версия: v{}", APP_VERSION)
+                                } else {
+                                    format!(
+                                        "Установлена последняя версия (v{}, на GitHub: {})",
+                                        APP_VERSION, tag
+                                    )
+                                };
+                                append_log_to_ui(&ui_weak, &log_buf, format!("[Update] {}", msg));
+                                let _ = slint::invoke_from_event_loop(move || {
+                                    if let Some(ui) = ui_weak.upgrade() {
+                                        ui.set_update_checking(false);
+                                        ui.set_update_available(is_newer);
+                                        ui.set_update_latest_url(html_url.into());
+                                        ui.set_update_status(msg.into());
+                                    }
+                                });
+                            }
+                            Err(e) => {
+                                let msg = format!("Ошибка разбора ответа GitHub: {}", e);
+                                append_log_to_ui(&ui_weak, &log_buf, format!("[Update] {}", msg));
+                                let _ = slint::invoke_from_event_loop(move || {
+                                    if let Some(ui) = ui_weak.upgrade() {
+                                        ui.set_update_checking(false);
+                                        ui.set_update_available(false);
+                                        ui.set_update_status(msg.into());
+                                    }
+                                });
+                            }
+                        }
+                    }
+                    Ok(r) => {
+                        let msg = format!("GitHub API вернул статус {}", r.status());
+                        append_log_to_ui(&ui_weak, &log_buf, format!("[Update] {}", msg));
+                        let _ = slint::invoke_from_event_loop(move || {
+                            if let Some(ui) = ui_weak.upgrade() {
+                                ui.set_update_checking(false);
+                                ui.set_update_available(false);
+                                ui.set_update_status(msg.into());
+                            }
+                        });
+                    }
+                    Err(e) => {
+                        let msg = format!("Не удалось проверить обновления: {}", e);
+                        append_log_to_ui(&ui_weak, &log_buf, format!("[Update] {}", msg));
+                        let _ = slint::invoke_from_event_loop(move || {
+                            if let Some(ui) = ui_weak.upgrade() {
+                                ui.set_update_checking(false);
+                                ui.set_update_available(false);
+                                ui.set_update_status(msg.into());
+                            }
+                        });
+                    }
+                }
+            });
+        });
+    }
     // Fetch Mojang + Custom Resource News & hydrate thumbnails
     {
         let ui_weak = ui.as_weak();
@@ -1970,12 +2627,12 @@ fn main() -> Result<()> {
                 if let Ok(cu) = cu_res {
                     combined.extend(cu);
                 } else if let Err(e) = cu_res {
-                    append_log_to_ui(&ui_weak, &log_buf, format!("[Новости] {}", e));
+                    append_log_to_ui(&ui_weak, &log_buf, format!("[News] {}", e));
                 }
                 if let Ok(mj) = mj_res {
                     combined.extend(mj);
                 } else if let Err(e) = mj_res {
-                    append_log_to_ui(&ui_weak, &log_buf, format!("[Новости Mojang] {}", e));
+                    append_log_to_ui(&ui_weak, &log_buf, format!("[Mojang News] {}", e));
                 }
 
                 let img_urls: Vec<(usize, String)> = combined
@@ -2054,6 +2711,8 @@ fn main() -> Result<()> {
         });
     }
 
+
+
     // CurseForge API Key helpers
     {
         let ui_weak = ui.as_weak();
@@ -2076,7 +2735,7 @@ fn main() -> Result<()> {
             append_log_to_ui(
                 &ui_weak,
                 &log_buf,
-                "[CurseForge] Подключён встроенный ключ API.".to_string(),
+                "[CurseForge] Built-in API key connected.".to_string(),
             );
         });
     }
@@ -2103,7 +2762,7 @@ fn main() -> Result<()> {
             append_log_to_ui(
                 &ui_weak,
                 &log_buf,
-                "[CurseForge] Ключ API сохранён.".to_string(),
+                "[CurseForge] API key saved.".to_string(),
             );
         });
     }
@@ -2114,19 +2773,21 @@ fn main() -> Result<()> {
         let config = config.clone();
         let data_dir = data_dir.clone();
         let discord_ctrl = discord_ctrl.clone();
+        let instance_logs = instance_logs.clone();
         ui.on_select_instance(move |inst_id| {
             let mut cfg = config.lock().unwrap();
             let id_str = inst_id.to_string();
             if id_str.is_empty() {
                 cfg.selected_instance_id = None;
             } else if cfg.instances.iter().any(|i| i.id == id_str) {
-                cfg.selected_instance_id = Some(id_str);
+                cfg.selected_instance_id = Some(id_str.clone());
             }
             save_config(&data_dir, &cfg);
             sync_discord_launcher_state(&discord_ctrl, &cfg, launcher_start_ts);
             if let Some(ui) = ui_weak.upgrade() {
                 ui.set_show_export_menu(false);
                 sync_ui_from_config(&ui, &cfg);
+                sync_instance_console_to_ui(&ui, &instance_logs, &id_str);
             }
         });
     }
@@ -2156,18 +2817,31 @@ fn main() -> Result<()> {
         let ui_weak = ui.as_weak();
         let config = config.clone();
         let data_dir = data_dir.clone();
+        let instance_logs = instance_logs.clone();
         ui.on_open_edit_instance(move || {
-            let cfg = config.lock().unwrap();
-            if let Some(ui) = ui_weak.upgrade() {
+            let (l_idx, mc, snaps, has_modpack) = {
+                let cfg = config.lock().unwrap();
+                let Some(ui) = ui_weak.upgrade() else { return; };
                 load_instance_into_editor(&ui, &cfg, &data_dir);
+                if let Some(sel_id) = cfg.selected_instance_id.as_deref() {
+                    sync_instance_console_to_ui(&ui, &instance_logs, sel_id);
+                }
                 ui.set_edit_subtab(1);
                 ui.set_active_tab(5);
-                let l_idx = ui.get_edit_inst_loader_idx();
-                let mc = ui.get_edit_inst_mc();
-                let snaps = ui.get_include_snapshots();
+                (
+                    ui.get_edit_inst_loader_idx(),
+                    ui.get_edit_inst_mc(),
+                    ui.get_include_snapshots(),
+                    !ui.get_edit_modpack_id().is_empty(),
+                )
+            };
+            if let Some(ui) = ui_weak.upgrade() {
                 ui.invoke_refresh_edit_versions(l_idx, mc.clone(), snaps);
                 if l_idx == 2 {
                     ui.invoke_refresh_optifine_versions(mc);
+                }
+                if has_modpack {
+                    ui.invoke_refresh_instance_modpack_versions();
                 }
             }
         });
@@ -2205,7 +2879,7 @@ fn main() -> Result<()> {
                         append_log_to_ui(
                             &ui_weak,
                             &log_buf,
-                            format!("[Сборка] Нельзя сохранить: {}", chosen_lv),
+                            format!("[Instance] Cannot save: {}", chosen_lv),
                         );
                         return;
                     }
@@ -2227,6 +2901,13 @@ fn main() -> Result<()> {
                     inst.custom_loader_name = ui.get_edit_custom_loader_name().trim().to_string();
                     inst.custom_loader_path = ui.get_edit_custom_loader_path().trim().to_string();
                     inst.custom_loader_main_class = ui.get_edit_custom_loader_main_class().trim().to_string();
+                    inst.ensure_default_components();
+                    if let Some(mc_c) = inst.components.iter_mut().find(|c| c.kind == ComponentKind::Minecraft) {
+                        mc_c.version = inst.mc_version.clone();
+                    }
+                    if let Some(ld_c) = inst.components.iter_mut().find(|c| c.kind == ComponentKind::Loader) {
+                        ld_c.version = inst.loader_version.clone();
+                    }
                     inst.enable_auto_join = ui.get_edit_enable_auto_join();
                     inst.quick_play_server = ui.get_edit_inst_quick_server().trim().to_string();
                     inst.quick_play_world = ui.get_edit_inst_quick_world().trim().to_string();
@@ -2311,7 +2992,7 @@ fn main() -> Result<()> {
                                     inst.id = new_id.clone();
                                     ui.set_edit_inst_folder_name(new_id.clone().into());
                                     renamed_log = Some(format!(
-                                        "[Сборка] Папка переименована: {} -> {}",
+                                        "[Instance] Folder renamed: {} -> {}",
                                         old_id, new_id
                                     ));
                                 }
@@ -2342,7 +3023,7 @@ fn main() -> Result<()> {
                     append_log_to_ui(
                         &ui_weak,
                         &log_buf,
-                        format!("[Сборка] Настройки «{}» сохранены.", saved_name),
+                        format!("[Instance] Settings for '{}' saved.", saved_name),
                     );
                 }
             }
@@ -2382,7 +3063,7 @@ fn main() -> Result<()> {
                                 &ui_weak,
                                 &log_buf,
                                 format!(
-                                    "[Сборка] Папка переименована: {} -> {}",
+                                    "[Instance] Folder renamed: {} -> {}",
                                     old_id, new_id
                                 ),
                             );
@@ -2390,7 +3071,7 @@ fn main() -> Result<()> {
                         Err(e) => append_log_to_ui(
                             &ui_weak,
                             &log_buf,
-                            format!("[Сборка] Не удалось переименовать папку: {}", e),
+                            format!("[Instance] Failed to rename folder: {}", e),
                         ),
                     }
                 }
@@ -2441,7 +3122,7 @@ fn main() -> Result<()> {
                             &ui_weak,
                             &log_buf,
                             format!(
-                                "[Сборка] Папка синхронизирована: {} -> {}",
+                                "[Instance] Folder synchronized: {} -> {}",
                                 old_id, new_id
                             ),
                         );
@@ -2449,7 +3130,7 @@ fn main() -> Result<()> {
                     Err(e) => append_log_to_ui(
                         &ui_weak,
                         &log_buf,
-                        format!("[Сборка] Не удалось переименовать папку: {}", e),
+                        format!("[Instance] Failed to rename folder: {}", e),
                     ),
                 }
             }
@@ -2577,9 +3258,9 @@ fn main() -> Result<()> {
                 Ok(()) => append_log_to_ui(
                     &ui_weak,
                     &log_buf,
-                    format!("[Скриншот] Скопирован в буфер обмена: {}", name),
+                    format!("[Screenshot] Copied to clipboard: {}", name),
                 ),
-                Err(e) => append_log_to_ui(&ui_weak, &log_buf, format!("[Скриншот] {}", e)),
+                Err(e) => append_log_to_ui(&ui_weak, &log_buf, format!("[Screenshot] {}", e)),
             }
         });
     }
@@ -2627,7 +3308,7 @@ fn main() -> Result<()> {
                 append_log_to_ui(
                     &ui_weak_c,
                     &log_buf_c,
-                    format!("[Сборки] Создана полная копия «{}».", cname),
+                    format!("[Instances] Full copy of '{}' created.", cname),
                 );
             });
         });
@@ -2659,7 +3340,7 @@ fn main() -> Result<()> {
             append_log_to_ui(
                 &ui_weak,
                 &log_buf,
-                format!("[Экспорт] Упаковка «{}» в формат {}...", inst.name, fmt.label()),
+                format!("[Export] Packaging '{}' as {}...", inst.name, fmt.label()),
             );
             rt.spawn_blocking(move || {
                 match export_instance_archive(&instances_dir, &exports_dir, &inst, fmt) {
@@ -2670,10 +3351,10 @@ fn main() -> Result<()> {
                         append_log_to_ui(
                             &ui_weak,
                             &log_buf,
-                            format!("[Экспорт • {}] Готово: {}", fmt.label(), path.display()),
+                            format!("[Export • {}] Done: {}", fmt.label(), path.display()),
                         );
                     }
-                    Err(e) => append_log_to_ui(&ui_weak, &log_buf, format!("[Ошибка экспорта] {:#}", e)),
+                    Err(e) => append_log_to_ui(&ui_weak, &log_buf, format!("[Export Error] {:#}", e)),
                 }
             });
         });
@@ -2715,6 +3396,360 @@ fn main() -> Result<()> {
                 });
             });
         });
+    }
+
+    // 2f. Prism-style Instance Components Manager (Toggle, Move, Remove, Edit, Revert, Actions)
+    {
+        fn mutate_selected_components<F: FnOnce(&mut Instance, &PathBuf)>(
+            ui_weak: &slint::Weak<MainWindow>,
+            config: &Arc<Mutex<LauncherConfig>>,
+            data_dir: &PathBuf,
+            f: F,
+        ) {
+                let mut cfg = config.lock().unwrap();
+                let target_id = cfg.selected_instance_id.clone();
+                let instances_dir = cfg.resolve_instances_dir(data_dir);
+                if let Some(inst) = cfg
+                    .instances
+                    .iter_mut()
+                    .find(|i| Some(&i.id) == target_id.as_ref())
+                {
+                    inst.ensure_default_components();
+                    f(inst, &instances_dir);
+                    write_instance_cfg(&instances_dir, inst);
+                    save_config(data_dir, &cfg);
+                    if let Some(ui) = ui_weak.upgrade() {
+                        sync_ui_from_config(&ui, &cfg);
+                    }
+                }
+            }
+
+        {
+            let ui_weak = ui.as_weak();
+            let config = config.clone();
+            let data_dir = data_dir.clone();
+            ui.on_component_toggle(move |idx| {
+                mutate_selected_components(
+                    &ui_weak,
+                    &config,
+                    &data_dir,
+                    |inst, _| {
+                        if let Some(c) = inst.components.get_mut(idx as usize) {
+                            c.enabled = !c.enabled;
+                        }
+                    });
+            });
+        }
+        {
+            let ui_weak = ui.as_weak();
+            let config = config.clone();
+            let data_dir = data_dir.clone();
+            ui.on_component_move(move |idx, delta| {
+                let mut new_idx = idx;
+                mutate_selected_components(
+                    &ui_weak,
+                    &config,
+                    &data_dir,
+                    |inst, _| {
+                        let i = idx as isize;
+                        let target = i + delta as isize;
+                        if i >= 0
+                            && target >= 0
+                            && (i as usize) < inst.components.len()
+                            && (target as usize) < inst.components.len()
+                        {
+                            inst.components.swap(i as usize, target as usize);
+                            new_idx = target as i32;
+                        }
+                    });
+                if let Some(ui) = ui_weak.upgrade() {
+                    ui.set_edit_selected_component_idx(new_idx);
+                }
+            });
+        }
+        {
+            let ui_weak = ui.as_weak();
+            let config = config.clone();
+            let data_dir = data_dir.clone();
+            ui.on_component_remove(move |idx| {
+                mutate_selected_components(
+                    &ui_weak,
+                    &config,
+                    &data_dir,
+                    |inst, _| {
+                        if (idx as usize) < inst.components.len() {
+                            inst.components.remove(idx as usize);
+                        }
+                    });
+                if let Some(ui) = ui_weak.upgrade() {
+                    let len = ui.get_edit_components().row_count() as i32;
+                    if idx >= len && len > 0 {
+                        ui.set_edit_selected_component_idx(len - 1);
+                    }
+                }
+            });
+        }
+        {
+            let ui_weak = ui.as_weak();
+            let config = config.clone();
+            let data_dir = data_dir.clone();
+            ui.on_component_save_edit(move |idx, name, version, file_path, extra_args| {
+                mutate_selected_components(
+                    &ui_weak,
+                    &config,
+                    &data_dir,
+                    |inst, _| {
+                        if let Some(c) = inst.components.get_mut(idx as usize) {
+                            let clean_name = name.trim().to_string();
+                            if !clean_name.is_empty() {
+                                c.name = clean_name;
+                            }
+                            c.version = version.trim().to_string();
+                            c.file_path = file_path.trim().to_string();
+                            c.extra_args = extra_args.trim().to_string();
+                            c.customized = true;
+                            if c.kind == ComponentKind::Minecraft && !c.version.is_empty() {
+                                inst.mc_version = c.version.clone();
+                            } else if c.kind == ComponentKind::Loader && !c.version.is_empty() {
+                                inst.loader_version = c.version.clone();
+                            }
+                        }
+                    });
+            });
+        }
+        {
+            let ui_weak = ui.as_weak();
+            let config = config.clone();
+            let data_dir = data_dir.clone();
+            ui.on_component_open_json(move |idx| {
+                let mut open_path: Option<PathBuf> = None;
+                mutate_selected_components(
+                    &ui_weak,
+                    &config,
+                    &data_dir,
+                    |inst, instances_dir| {
+                        let inst_id = inst.id.clone();
+                        if let Some(c) = inst.components.get_mut(idx as usize) {
+                            let patches_dir = instances_dir.join(&inst_id).join("patches");
+                            let _ = std::fs::create_dir_all(&patches_dir);
+                            let safe_uid: String = c
+                                .uid
+                                .chars()
+                                .map(|ch| if ch.is_ascii_alphanumeric() || ch == '.' || ch == '-' || ch == '_' { ch } else { '_' })
+                                .collect();
+                            let p = if !c.file_path.trim().is_empty()
+                                && c.file_path.trim().to_ascii_lowercase().ends_with(".json")
+                            {
+                                PathBuf::from(c.file_path.trim())
+                            } else {
+                                patches_dir.join(format!("{}.json", safe_uid))
+                            };
+                            if !p.exists() {
+                                let template = serde_json::json!({
+                                    "formatVersion": 1,
+                                    "uid": c.uid,
+                                    "name": c.name,
+                                    "version": c.version,
+                                    "libraries": []
+                                });
+                                let _ = std::fs::write(
+                                    &p,
+                                    serde_json::to_string_pretty(&template).unwrap_or_default(),
+                                );
+                            }
+                            c.file_path = p.to_string_lossy().to_string();
+                            c.customized = true;
+                            open_path = Some(p);
+                        }
+                    });
+                if let Some(p) = open_path {
+                    let _ = open::that(p);
+                }
+            });
+        }
+        {
+            let ui_weak = ui.as_weak();
+            let config = config.clone();
+            let data_dir = data_dir.clone();
+            ui.on_component_revert(move |idx| {
+                mutate_selected_components(
+                    &ui_weak,
+                    &config,
+                    &data_dir,
+                    |inst, _| {
+                        if let Some(c) = inst.components.get_mut(idx as usize) {
+                            c.customized = false;
+                            if matches!(
+                                c.kind,
+                                ComponentKind::Lwjgl
+                                    | ComponentKind::Minecraft
+                                    | ComponentKind::Mappings
+                                    | ComponentKind::Loader
+                            ) {
+                                c.file_path.clear();
+                                c.extra_args.clear();
+                            }
+                            if c.kind == ComponentKind::Lwjgl {
+                                c.version = "auto".to_string();
+                            } else if c.kind == ComponentKind::Minecraft {
+                                c.version = inst.mc_version.clone();
+                            } else if c.kind == ComponentKind::Loader {
+                                c.version = inst.loader_version.clone();
+                            }
+                        }
+                    });
+            });
+        }
+        {
+            let ui_weak = ui.as_weak();
+            let config = config.clone();
+            let data_dir = data_dir.clone();
+            let rt = rt.clone();
+            ui.on_component_action(move |action| {
+                let act = action.to_string();
+                if act == "open_mc" || act == "open_libs" {
+                    let cfg = config.lock().unwrap();
+                    if act == "open_libs" {
+                        let libs = cfg.resolve_libraries_dir(&data_dir);
+                        let _ = std::fs::create_dir_all(&libs);
+                        let _ = open::that(libs);
+                    } else if let Some(id) = &cfg.selected_instance_id {
+                        let mc = cfg.resolve_instances_dir(&data_dir).join(id).join(".minecraft");
+                        let _ = std::fs::create_dir_all(&mc);
+                        let _ = open::that(mc);
+                    }
+                    return;
+                }
+                if act == "empty" {
+                    let mut cfg = config.lock().unwrap();
+                    let target_id = cfg.selected_instance_id.clone();
+                    let instances_dir = cfg.resolve_instances_dir(&data_dir);
+                    if let Some(inst) = cfg
+                        .instances
+                        .iter_mut()
+                        .find(|i| Some(&i.id) == target_id.as_ref())
+                    {
+                        inst.ensure_default_components();
+                        let n = inst.components.len() + 1;
+                        let uid = format!("custom.patch.{}", n);
+                        let patches_dir = instances_dir.join(&inst.id).join("patches");
+                        let _ = std::fs::create_dir_all(&patches_dir);
+                        let p = patches_dir.join(format!("{}.json", uid));
+                        let template = serde_json::json!({
+                            "formatVersion": 1,
+                            "uid": uid,
+                            "name": format!("Custom Component {}", n),
+                            "version": "1.0.0",
+                            "libraries": []
+                        });
+                        let _ = std::fs::write(
+                            &p,
+                            serde_json::to_string_pretty(&template).unwrap_or_default(),
+                        );
+                        inst.components.push(InstanceComponent {
+                            uid,
+                            name: format!("Custom Component {}", n),
+                            version: "1.0.0".to_string(),
+                            kind: ComponentKind::CustomPatch,
+                            enabled: true,
+                            file_path: p.to_string_lossy().to_string(),
+                            extra_args: String::new(),
+                            customized: true,
+                        });
+                        write_instance_cfg(&instances_dir, inst);
+                        let new_idx = (inst.components.len() as i32) - 1;
+                        save_config(&data_dir, &cfg);
+                        if let Some(ui) = ui_weak.upgrade() {
+                            sync_ui_from_config(&ui, &cfg);
+                            ui.set_edit_selected_component_idx(new_idx);
+                        }
+                    }
+                    return;
+                }
+
+                let ui_w = ui_weak.clone();
+                let cfg_arc = config.clone();
+                let dd = data_dir.clone();
+                rt.spawn_blocking(move || {
+                    let title = match act.as_str() {
+                        "jarmod" => "Выберите .jar / .zip для добавления в Minecraft.jar",
+                        "replace_jar" => "Выберите заменяющий Minecraft.jar",
+                        "agent" => "Выберите Java Agent (.jar)",
+                        _ => "Импорт компонента (.json)",
+                    };
+                    if let Some(chosen) = pick_native_file(title, false) {
+                        let w = ui_w.clone();
+                        let cfg_a = cfg_arc.clone();
+                        let d_dir = dd.clone();
+                        let act_c = act.clone();
+                        let _ = slint::invoke_from_event_loop(move || {
+                            let mut cfg = cfg_a.lock().unwrap();
+                            let target_id = cfg.selected_instance_id.clone();
+                            let instances_dir = cfg.resolve_instances_dir(&d_dir);
+                            if let Some(inst) = cfg
+                                .instances
+                                .iter_mut()
+                                .find(|i| Some(&i.id) == target_id.as_ref())
+                            {
+                                inst.ensure_default_components();
+                                let fname = std::path::Path::new(&chosen)
+                                    .file_name()
+                                    .and_then(|s| s.to_str())
+                                    .unwrap_or("component")
+                                    .to_string();
+                                let n = inst.components.len() + 1;
+                                let (kind, uid, name, ver) = match act_c.as_str() {
+                                    "jarmod" => (
+                                        ComponentKind::JarMod,
+                                        format!("custom.jarmod.{}", n),
+                                        format!("JarMod: {}", fname),
+                                        "jar".to_string(),
+                                    ),
+                                    "replace_jar" => {
+                                        inst.components.retain(|c| c.kind != ComponentKind::ReplaceJar);
+                                        (
+                                            ComponentKind::ReplaceJar,
+                                            "custom.replace.minecraft".to_string(),
+                                            format!("Custom Minecraft.jar ({})", fname),
+                                            inst.mc_version.clone(),
+                                        )
+                                    }
+                                    "agent" => (
+                                        ComponentKind::JavaAgent,
+                                        format!("custom.agent.{}", n),
+                                        format!("Java Agent: {}", fname),
+                                        "agent".to_string(),
+                                    ),
+                                    _ => (
+                                        ComponentKind::CustomPatch,
+                                        format!("custom.import.{}", n),
+                                        fname.trim_end_matches(".json").to_string(),
+                                        "1.0".to_string(),
+                                    ),
+                                };
+                                inst.components.push(InstanceComponent {
+                                    uid,
+                                    name,
+                                    version: ver,
+                                    kind,
+                                    enabled: true,
+                                    file_path: chosen,
+                                    extra_args: String::new(),
+                                    customized: true,
+                                });
+                                write_instance_cfg(&instances_dir, inst);
+                                let new_idx = (inst.components.len() as i32) - 1;
+                                save_config(&d_dir, &cfg);
+                                if let Some(ui) = w.upgrade() {
+                                    sync_ui_from_config(&ui, &cfg);
+                                    ui.set_edit_selected_component_idx(new_idx);
+                                }
+                            }
+                        });
+                    }
+                });
+            });
+        }
     }
 
     {
@@ -2783,6 +3818,8 @@ fn main() -> Result<()> {
             });
         });
     }
+
+
 
     // 2b. Refresh Versions for Edit Instance Dropdowns
     {
@@ -2860,6 +3897,8 @@ fn main() -> Result<()> {
         });
     }
 
+
+
     // 3. Create Custom Instance (and immediately download & prepare its files with progress modal!)
     {
         let ui_weak = ui.as_weak();
@@ -2876,7 +3915,7 @@ fn main() -> Result<()> {
                         &ui_weak,
                         &log_buf,
                         format!(
-                            "[Сборки] Нет сборок {} для версии Minecraft {}",
+                            "[Instances] No {} builds for Minecraft {}",
                             loader.as_str(),
                             mc_ver
                         ),
@@ -2899,11 +3938,7 @@ fn main() -> Result<()> {
                     } else {
                         name.trim().to_string()
                     };
-                    let clean_group = if group.trim().is_empty() {
-                        "Основное".to_string()
-                    } else {
-                        group.trim().to_string()
-                    };
+                    let clean_group = group.trim().to_string();
                     let instances_dir = cfg.resolve_instances_dir(&data_dir);
                     let _ = std::fs::create_dir_all(&instances_dir);
                     let id = dir_name_from_string(&clean_name, &instances_dir, None);
@@ -2971,7 +4006,7 @@ fn main() -> Result<()> {
                     &ui_weak,
                     &log_buf,
                     format!(
-                        "[Сборки] Создана сборка «{}» ({} | {}) — запуск первоначальной загрузки...",
+                        "[Instances] Created instance '{}' ({} | {}) — starting initial download...",
                         clean_name_dl, mc_ver_dl, loader_label
                     ),
                 );
@@ -3053,6 +4088,78 @@ fn main() -> Result<()> {
         );
     }
 
+    // 3b-0. Dynamic Catalog Filters (Prism / FreesmLauncher per-provider & per-kind)
+    {
+        let ui_weak = ui.as_weak();
+        ui.on_sync_catalog_filters(move |kind, provider_idx| {
+            if let Some(ui) = ui_weak.upgrade() {
+                apply_catalog_filter_preset(&ui, kind.as_str(), provider_idx);
+            }
+        });
+    }
+    {
+        let ui_weak = ui.as_weak();
+        ui.on_toggle_catalog_loader(move |idx| {
+            if let Some(ui) = ui_weak.upgrade() {
+                let model = ui.get_catalog_loader_chips();
+                if let Some(mut chip) = model.row_data(idx as usize) {
+                    chip.selected = !chip.selected;
+                    model.set_row_data(idx as usize, chip);
+                }
+            }
+        });
+    }
+    {
+        let ui_weak = ui.as_weak();
+        ui.on_toggle_catalog_category(move |ridx, cidx| {
+            if let Some(ui) = ui_weak.upgrade() {
+                let rmodel = ui.get_catalog_category_rows();
+                if let Some(row) = rmodel.row_data(ridx as usize) {
+                    if let Some(mut chip) = row.chips.row_data(cidx as usize) {
+                        chip.selected = !chip.selected;
+                        row.chips.set_row_data(cidx as usize, chip);
+                    }
+                }
+            }
+        });
+    }
+    {
+        let ui_weak = ui.as_weak();
+        ui.on_reset_catalog_filters(move || {
+            if let Some(ui) = ui_weak.upgrade() {
+                let sort_opts = ui.get_catalog_sort_options();
+                let first_sort = sort_opts.row_data(0).unwrap_or_else(|| "Релевантность".into());
+                ui.set_catalog_filter_sort(first_sort);
+                ui.set_catalog_filter_mc("Все".into());
+                ui.set_catalog_filter_open_source(false);
+                ui.set_catalog_flt_client(false);
+                ui.set_catalog_flt_server(false);
+                let lmodel = ui.get_catalog_loader_chips();
+                for i in 0..lmodel.row_count() {
+                    if let Some(mut chip) = lmodel.row_data(i) {
+                        if chip.selected {
+                            chip.selected = false;
+                            lmodel.set_row_data(i, chip);
+                        }
+                    }
+                }
+                let rmodel = ui.get_catalog_category_rows();
+                for r in 0..rmodel.row_count() {
+                    if let Some(row) = rmodel.row_data(r) {
+                        for c in 0..row.chips.row_count() {
+                            if let Some(mut chip) = row.chips.row_data(c) {
+                                if chip.selected {
+                                    chip.selected = false;
+                                    row.chips.set_row_data(c, chip);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        });
+    }
+
     // 3b. Search External Modpacks (with live debounce + async icon hydration)
     {
         use std::sync::atomic::{AtomicU64, Ordering};
@@ -3072,6 +4179,10 @@ fn main() -> Result<()> {
             let log_buf = log_buf.clone();
             let provider = ExternalProvider::from_index(provider_idx);
             let q = query.to_string();
+            let filter = ui_weak
+                .upgrade()
+                .map(|u| read_catalog_filter_from_ui(&u))
+                .unwrap_or_default();
             let cache_dir = config
                 .lock()
                 .unwrap()
@@ -3086,10 +4197,20 @@ fn main() -> Result<()> {
                 if gen_ref.load(Ordering::Relaxed) != my_gen {
                     return;
                 }
-                match meta
-                    .search_external_asset(provider, AssetKind::Modpack, &q, None, None)
-                    .await
-                {
+                let res = match provider {
+                    ExternalProvider::Modrinth => {
+                        meta.search_modrinth_filtered(&q, "modpack", &filter).await
+                    }
+                    ExternalProvider::CurseForge => {
+                        let cid: u32 = AssetKind::Modpack.curseforge_class_id().parse().unwrap_or(4471);
+                        meta.search_curseforge_filtered(&q, cid, &filter).await
+                    }
+                    _ => {
+                        meta.search_external_asset(provider, AssetKind::Modpack, &q, None, None)
+                            .await
+                    }
+                };
+                match res {
                     Ok(items) => {
                         if gen_ref.load(Ordering::Relaxed) != my_gen {
                             return;
@@ -3163,7 +4284,7 @@ fn main() -> Result<()> {
                     Err(e) => append_log_to_ui(
                         &ui_weak,
                         &log_buf,
-                        format!("[Модпаки • {}] Ошибка: {}", provider.as_str(), e),
+                        format!("[Modpacks • {}] Error: {}", provider.as_str(), e),
                     ),
                 }
             });
@@ -3189,15 +4310,10 @@ fn main() -> Result<()> {
             let pid = pack_id.to_string();
             let title_str = title.to_string();
             let mc_str = mc_ver.to_string();
-            let grp_str = if group.trim().is_empty() {
-                "Модпаки".to_string()
-            } else {
-                group.trim().to_string()
-            };
+            let grp_str = group.trim().to_string();
 
             if let Some(ui) = ui_weak.upgrade() {
-                ui.set_is_busy(true);
-                ui.set_launch_progress(0.2);
+                open_modpack_download_modal(&ui, &title_str, provider.as_str());
             }
 
             let (instances_dir, icons_dir) = {
@@ -3224,45 +4340,36 @@ fn main() -> Result<()> {
                     )
                     .await
                 {
-                    Ok(mut inst) => {
-                        let icon_save = icons_dir.join(format!("pack_{}", inst.id));
-                        if let Some(saved_icon) = meta
-                            .fetch_external_modpack_icon(provider, &pid, &inst.name, &icon_save)
-                            .await
-                        {
-                            inst.custom_icon_path = saved_icon.to_string_lossy().to_string();
-                        }
-                        let name = inst.name.clone();
-                        {
-                            let mut cfg = config.lock().unwrap();
-                            cfg.selected_instance_id = Some(inst.id.clone());
-                            cfg.instances.push(inst);
-                            save_config(&data_dir, &cfg);
-                            let cfg_clone = cfg.clone();
-                            let w = ui_weak.clone();
-                            let _ = slint::invoke_from_event_loop(move || {
-                                if let Some(ui) = w.upgrade() {
-                                    ui.set_is_busy(false);
-                                    ui.set_launch_progress(0.0);
-                                    sync_ui_from_config(&ui, &cfg_clone);
-                                }
-                            });
-                        }
-                        append_log_to_ui(
-                            &ui_weak,
-                            &log_buf,
-                            format!("[Модпак] Сборка «{}» установлена.", name),
-                        );
+                    Ok(inst) => {
+                        finalize_modpack_instance_and_prepare(
+                            ui_weak,
+                            config,
+                            data_dir,
+                            meta,
+                            log_buf,
+                            inst,
+                            provider,
+                            pid,
+                            instances_dir,
+                            icons_dir,
+                        )
+                        .await;
                     }
                     Err(e) => {
+                        let err_msg = format!("Ошибка загрузки сборки: {}", e);
                         let w = ui_weak.clone();
                         let _ = slint::invoke_from_event_loop(move || {
                             if let Some(ui) = w.upgrade() {
+                                ui.set_download_modal_error(true);
+                                ui.set_download_modal_done(false);
+                                ui.set_download_modal_status(err_msg.clone().into());
                                 ui.set_is_busy(false);
                                 ui.set_launch_progress(0.0);
+                                ui.set_status_is_error(true);
+                                ui.set_status_text(err_msg.into());
                             }
                         });
-                        append_log_to_ui(&ui_weak, &log_buf, format!("[Ошибка модпака] {:#}", e));
+                        append_log_to_ui(&ui_weak, &log_buf, format!("[Modpack Error] {:#}", e));
                     }
                 }
             });
@@ -3322,11 +4429,11 @@ fn main() -> Result<()> {
                         append_log_to_ui(
                             &ui_weak,
                             &log_buf,
-                            format!("[Импорт] Сборка «{}» готова.", iname),
+                            format!("[Import] Instance '{}' is ready.", iname),
                         );
                     }
                     Err(e) => {
-                        append_log_to_ui(&ui_weak, &log_buf, format!("[Ошибка импорта] {:#}", e))
+                        append_log_to_ui(&ui_weak, &log_buf, format!("[Import Error] {:#}", e))
                     }
                 }
             });
@@ -3348,7 +4455,7 @@ fn main() -> Result<()> {
             append_log_to_ui(
                 &ui_weak,
                 &log_buf,
-                "[Миграция] Поиск сборок FreesmLauncher / PrismLauncher / MultiMC...".to_string(),
+                "[Migration] Searching for FreesmLauncher / PrismLauncher / MultiMC instances...".to_string(),
             );
             let instances_dir = config.lock().unwrap().resolve_instances_dir(&data_dir);
             rt.spawn_blocking(move || {
@@ -3376,10 +4483,10 @@ fn main() -> Result<()> {
                         append_log_to_ui(
                             &ui_weak,
                             &log_buf,
-                            format!("[Миграция] Импортировано сборок: {}.", count),
+                            format!("[Migration] Instances imported: {}.", count),
                         );
                     }
-                    Err(e) => append_log_to_ui(&ui_weak, &log_buf, format!("[Миграция] {}", e)),
+                    Err(e) => append_log_to_ui(&ui_weak, &log_buf, format!("[Migration] {}", e)),
                 }
             });
         });
@@ -3404,7 +4511,7 @@ fn main() -> Result<()> {
                 if let Some(ui) = ui_weak.upgrade() {
                     sync_ui_from_config(&ui, &cfg);
                 }
-                append_log_to_ui(&ui_weak, &log_buf, "[Сборки] Сборка удалена.".to_string());
+                append_log_to_ui(&ui_weak, &log_buf, "[Instances] Instance deleted.".to_string());
             }
         });
     }
@@ -3427,7 +4534,7 @@ fn main() -> Result<()> {
                 append_log_to_ui(
                     &ui_weak,
                     &log_buf,
-                    format!("Открыта папка: {}", folder.display()),
+                    format!("Opened folder: {}", folder.display()),
                 );
             }
         });
@@ -3482,6 +4589,7 @@ fn main() -> Result<()> {
         let rt = rt.clone();
         let meta_holder = meta_holder.clone();
         let log_buf = log_buf.clone();
+        let instance_logs = instance_logs.clone();
         let active_kill_tx = active_kill_tx.clone();
         let tray_ctrl = tray_ctrl.clone();
         let discord_ctrl = discord_ctrl.clone();
@@ -3498,7 +4606,7 @@ fn main() -> Result<()> {
                 append_log_to_ui(
                     &ui_weak,
                     &log_buf,
-                    "Ошибка: сначала создайте сборку!".to_string(),
+                    "Error: please create an instance first!".to_string(),
                 );
                 return;
             };
@@ -3521,7 +4629,7 @@ fn main() -> Result<()> {
                 append_log_to_ui(
                     &ui_weak,
                     &log_buf,
-                    "Ошибка: сначала добавьте аккаунт!".to_string(),
+                    "Error: please add an account first!".to_string(),
                 );
                 return;
             };
@@ -3577,11 +4685,15 @@ fn main() -> Result<()> {
             }
 
             let ui_weak_log = ui_weak.clone();
+            let ui_weak_inst_log = ui_weak.clone();
             let ui_weak_prog = ui_weak.clone();
             let ui_weak_done = ui_weak.clone();
             let ui_weak_tray = ui_weak.clone();
             let log_buf_cb = log_buf.clone();
             let log_buf_done = log_buf.clone();
+            let instance_logs_cb = instance_logs.clone();
+            let config_inst_log = config.clone();
+            let inst_id_log = inst.id.clone();
             let meta = current_meta(&meta_holder);
             let data_dir_run = data_dir.clone();
             let config_run = config.clone();
@@ -3602,7 +4714,7 @@ fn main() -> Result<()> {
                     append_log_to_ui(
                         &ui_weak_done,
                         &log_buf_done,
-                        "[Microsoft] Обновление токена сессии перед запуском...".to_string(),
+                        "[Microsoft] Refreshing session token before launch...".to_string(),
                     );
                     let custom_cid = if cfg_snapshot.msa_client_id.trim().is_empty() {
                         None
@@ -3621,7 +4733,7 @@ fn main() -> Result<()> {
                         Err(e) => append_log_to_ui(
                             &ui_weak_done,
                             &log_buf_done,
-                            format!("[Microsoft] Предупреждение при обновлении токена: {}", e),
+                            format!("[Microsoft] Token refresh warning: {}", e),
                         ),
                     }
                 }
@@ -3652,13 +4764,13 @@ fn main() -> Result<()> {
                             Ok(n) if n > 0 => append_log_to_ui(
                                 &ui_weak_done,
                                 &log_buf_done,
-                                format!("[Моды] Автоматически обновлено модов: {}", n),
+                                format!("[Mods] Auto-updated mods: {}", n),
                             ),
                             Ok(_) => {}
                             Err(e) => append_log_to_ui(
                                 &ui_weak_done,
                                 &log_buf_done,
-                                format!("[Моды] Ошибка автообновления модов: {}", e),
+                                format!("[Mods] Mod auto-update error: {}", e),
                             ),
                         }
                     }
@@ -3693,6 +4805,13 @@ fn main() -> Result<()> {
                     force_offline,
                     kill_rx,
                     move |log_line| {
+                        append_instance_log_to_ui(
+                            &ui_weak_inst_log,
+                            &instance_logs_cb,
+                            &config_inst_log,
+                            &inst_id_log,
+                            log_line.clone(),
+                        );
                         append_log_to_ui(&ui_weak_log, &log_buf_cb, log_line);
                     },
                     move |progress, status_msg| {
@@ -3755,7 +4874,7 @@ fn main() -> Result<()> {
                         append_log_to_ui(
                             &ui_weak_done,
                             &log_buf_done,
-                            format!("[ОШИБКА ЗАПУСКА] {:#}", err),
+                            format!("[LAUNCH ERROR] {:#}", err),
                         );
                         if show_console_error {
                             let w_err = ui_weak_done.clone();
@@ -3788,6 +4907,8 @@ fn main() -> Result<()> {
         });
     }
 
+
+
     // 7. Auth: Offline
     {
         let ui_weak = ui.as_weak();
@@ -3815,10 +4936,10 @@ fn main() -> Result<()> {
                     append_log_to_ui(
                         &ui_weak,
                         &log_buf,
-                        format!("[Аккаунты] Добавлен Offline-профиль «{}».", uname),
+                        format!("[Accounts] Added Offline profile '{}'.", uname),
                     );
                 }
-                Err(e) => append_log_to_ui(&ui_weak, &log_buf, format!("[Аккаунты] Ошибка: {}", e)),
+                Err(e) => append_log_to_ui(&ui_weak, &log_buf, format!("[Accounts] Error: {}", e)),
             }
         });
     }
@@ -3846,7 +4967,7 @@ fn main() -> Result<()> {
             append_log_to_ui(
                 &ui_weak,
                 &log_buf,
-                "[Microsoft] Запрос кода устройства...".to_string(),
+                "[Microsoft] Requesting device code...".to_string(),
             );
 
             rt.spawn(async move {
@@ -3893,20 +5014,20 @@ fn main() -> Result<()> {
                                 append_log_to_ui(
                                     &ui_weak,
                                     &log_buf,
-                                    format!("[Microsoft] Вход выполнен: {}", uname),
+                                    format!("[Microsoft] Signed in: {}", uname),
                                 );
                             }
                             Err(e) => append_log_to_ui(
                                 &ui_weak,
                                 &log_buf,
-                                format!("[Microsoft] Ошибка: {}", e),
+                                format!("[Microsoft] Error: {}", e),
                             ),
                         }
                     }
                     Err(e) => append_log_to_ui(
                         &ui_weak,
                         &log_buf,
-                        format!("[Microsoft] Ошибка: {}", e),
+                        format!("[Microsoft] Error: {}", e),
                     ),
                 }
             });
@@ -3989,13 +5110,13 @@ fn main() -> Result<()> {
                             append_log_to_ui(
                                 &ui_weak,
                                 &log_buf,
-                                format!("[Yggdrasil] Вход выполнен: {}", uname),
+                                format!("[Yggdrasil] Signed in: {}", uname),
                             );
                         }
                         Err(e) => append_log_to_ui(
                             &ui_weak,
                             &log_buf,
-                            format!("[Yggdrasil] Ошибка: {}", e),
+                            format!("[Yggdrasil] Error: {}", e),
                         ),
                     }
                 });
@@ -4031,7 +5152,7 @@ fn main() -> Result<()> {
             append_log_to_ui(
                 &ui_weak,
                 &log_buf,
-                format!("[Аккаунты] Обновление сессии «{}»...", acc.username),
+                format!("[Accounts] Refreshing session '{}'...", acc.username),
             );
             rt.spawn(async move {
                 let res = match acc.account_type {
@@ -4061,13 +5182,13 @@ fn main() -> Result<()> {
                         append_log_to_ui(
                             &ui_weak,
                             &log_buf,
-                            format!("[Аккаунты] Токен «{}» успешно обновлён.", uname),
+                            format!("[Accounts] Token for '{}' refreshed successfully.", uname),
                         );
                     }
                     Err(e) => append_log_to_ui(
                         &ui_weak,
                         &log_buf,
-                        format!("[Аккаунты] Ошибка обновления: {}", e),
+                        format!("[Accounts] Refresh error: {}", e),
                     ),
                 }
             });
@@ -4125,29 +5246,29 @@ fn main() -> Result<()> {
             append_log_to_ui(
                 &ui_weak,
                 &log_buf,
-                "[Репозитории] Проверка доступности...".to_string(),
+                "[Repositories] Checking availability...".to_string(),
             );
 
             rt.spawn(async move {
                 let mut rows = default_repo_rows(&cfg_snap);
                 if let Ok(releases) = meta.fetch_horizon_releases().await {
                     if let Some(row) = rows.iter_mut().find(|r| r.uid == "horizon-rust/horizon") {
-                        row.status = format!("ОК ({} релизов)", releases.len()).into();
+                        row.status = format!("OK ({} {})", releases.len(), i18n::translate_current("релизов")).into();
                     }
                 }
                 if let Ok(m) = meta.fetch_labymod_manifest().await {
                     if let Some(row) = rows.iter_mut().find(|r| r.uid == "net.labymod") {
-                        row.status = format!("ОК (v{})", m.labymod_version).into();
+                        row.status = format!("OK (v{})", m.labymod_version).into();
                     }
                 }
                 if let Ok(idx) = meta.fetch_prism_index("net.minecraft").await {
                     if let Some(row) = rows.iter_mut().find(|r| r.uid == "net.minecraft") {
-                        row.status = format!("ОК ({} версий)", idx.versions.len()).into();
+                        row.status = format!("OK ({} {})", idx.versions.len(), i18n::translate_current("версий")).into();
                     }
                 }
                 if let Ok(ofs) = meta.fetch_optifine_versions("1.20.1").await {
                     if let Some(row) = rows.iter_mut().find(|r| r.uid == "optifine.OptiFine") {
-                        row.status = format!("ОК ({} сборок 1.20.1)", ofs.len()).into();
+                        row.status = format!("OK ({} {} 1.20.1)", ofs.len(), i18n::translate_current("сборок")).into();
                     }
                 }
 
@@ -4160,7 +5281,7 @@ fn main() -> Result<()> {
                 append_log_to_ui(
                     &ui_weak,
                     &log_buf,
-                    "[Репозитории] Проверка завершена.".to_string(),
+                    "[Repositories] Availability check completed.".to_string(),
                 );
             });
         });
@@ -4200,6 +5321,10 @@ fn main() -> Result<()> {
             let meta = current_meta(&meta_holder);
             let log_buf = log_buf.clone();
             let q = query.to_string();
+            let mut filter = ui_weak
+                .upgrade()
+                .map(|u| read_catalog_filter_from_ui(&u))
+                .unwrap_or_default();
             let (mc_ver, loader, cache_dir) = {
                 let cfg = config.lock().unwrap();
                 let inst = cfg
@@ -4213,6 +5338,25 @@ fn main() -> Result<()> {
                 };
                 (m, l, cfg.resolve_icons_dir(&data_dir).join("catalog_cache"))
             };
+            if filter.mc_version.is_empty() {
+                if let Some(ref m) = mc_ver {
+                    filter.mc_version = m.clone();
+                }
+            }
+            if filter.loaders.is_empty() && kind == AssetKind::Mod {
+                if let Some(ref l) = loader {
+                    let ld = match l {
+                        LoaderType::Fabric => "fabric",
+                        LoaderType::Forge => "forge",
+                        LoaderType::NeoForge => "neoforge",
+                        LoaderType::Quilt => "quilt",
+                        _ => "",
+                    };
+                    if !ld.is_empty() {
+                        filter.loaders.push(ld.to_string());
+                    }
+                }
+            }
             let rt_icons = rt.clone();
 
             rt.spawn(async move {
@@ -4222,28 +5366,12 @@ fn main() -> Result<()> {
                 if gens_ref[kind_slot].load(Ordering::Relaxed) != my_gen {
                     return;
                 }
-                let loader_opt = if kind == AssetKind::Mod {
-                    loader.as_ref()
-                } else {
-                    None
-                };
 
+                let cf_class_id: u32 = kind.curseforge_class_id().parse().unwrap_or(6);
                 let hits_res: Result<Vec<ExternalPackItem>> = if provider_idx == 2 {
                     let (r_mr, r_cf) = tokio::join!(
-                        meta.search_external_asset(
-                            ExternalProvider::Modrinth,
-                            kind,
-                            &q,
-                            mc_ver.as_deref(),
-                            loader_opt
-                        ),
-                        meta.search_external_asset(
-                            ExternalProvider::CurseForge,
-                            kind,
-                            &q,
-                            mc_ver.as_deref(),
-                            loader_opt
-                        ),
+                        meta.search_modrinth_filtered(&q, kind.modrinth_type(), &filter),
+                        meta.search_curseforge_filtered(&q, cf_class_id, &filter),
                     );
                     let mr = r_mr.unwrap_or_default();
                     let cf = r_cf.unwrap_or_default();
@@ -4267,8 +5395,20 @@ fn main() -> Result<()> {
                     Ok(merged)
                 } else {
                     let provider = ExternalProvider::from_index(provider_idx);
-                    meta.search_external_asset(provider, kind, &q, mc_ver.as_deref(), loader_opt)
-                        .await
+                    match provider {
+                        ExternalProvider::Modrinth => {
+                            meta.search_modrinth_filtered(&q, kind.modrinth_type(), &filter)
+                                .await
+                        }
+                        ExternalProvider::CurseForge => {
+                            meta.search_curseforge_filtered(&q, cf_class_id, &filter)
+                                .await
+                        }
+                        _ => {
+                            meta.search_external_asset(provider, kind, &q, mc_ver.as_deref(), None)
+                                .await
+                        }
+                    }
                 };
 
                 match hits_res {
@@ -4358,7 +5498,7 @@ fn main() -> Result<()> {
                     Err(e) => append_log_to_ui(
                         &ui_weak,
                         &log_buf,
-                        format!("[Каталог] Ошибка поиска: {}", e),
+                        format!("[Catalog] Search error: {}", e),
                     ),
                 }
             });
@@ -4452,7 +5592,7 @@ fn main() -> Result<()> {
                                                 append_log_to_ui(
                                                     &ui_weak,
                                                     &log_buf,
-                                                    format!("[Миры] Распакован мир «{}» в saves/{}", title_str, world_dir),
+                                                    format!("[Worlds] Extracted world '{}' to saves/{}", title_str, world_dir),
                                                 );
                                             }
                                             Err(e) => {
@@ -4460,7 +5600,7 @@ fn main() -> Result<()> {
                                                 append_log_to_ui(
                                                     &ui_weak,
                                                     &log_buf,
-                                                    format!("[Миры] Ошибка распаковки {}: {}", filename, e),
+                                                    format!("[Worlds] Failed to extract {}: {}", filename, e),
                                                 );
                                             }
                                         }
@@ -4516,7 +5656,7 @@ fn main() -> Result<()> {
                                         append_log_to_ui(
                                             &ui_weak,
                                             &log_buf,
-                                            format!("[Установка] Готово: {} -> {}", filename, sub),
+                                            format!("[Install] Done: {} -> {}", filename, sub),
                                         );
                                     }
                                 }
@@ -4524,16 +5664,16 @@ fn main() -> Result<()> {
                             Ok(resp) => append_log_to_ui(
                                 &ui_weak,
                                 &log_buf,
-                                format!("[Установка] HTTP {}: не удалось скачать {}", resp.status(), filename),
+                                format!("[Install] HTTP {}: failed to download {}", resp.status(), filename),
                             ),
                             Err(e) => append_log_to_ui(
                                 &ui_weak,
                                 &log_buf,
-                                format!("[Установка] Ошибка загрузки {}: {}", filename, e),
+                                format!("[Install] Download error {}: {}", filename, e),
                             ),
                         }
                     }
-                    Err(e) => append_log_to_ui(&ui_weak, &log_buf, format!("[Установка] {}", e)),
+                    Err(e) => append_log_to_ui(&ui_weak, &log_buf, format!("[Install] {}", e)),
                 }
             });
         });
@@ -4553,7 +5693,7 @@ fn main() -> Result<()> {
                         ui.set_setting_java_path(best.clone().into());
                     }
                 }
-                append_log_to_ui(&ui_weak, &log_buf, format!("[Java] Найдена: {}", best));
+                append_log_to_ui(&ui_weak, &log_buf, format!("[Java] Found: {}", best));
             }
         });
     }
@@ -4780,7 +5920,7 @@ fn main() -> Result<()> {
             append_log_to_ui(
                 &ui_weak,
                 &log_buf,
-                "[Настройки] Все настройки сохранены и применены.".to_string(),
+                "[Settings] All settings saved and applied.".to_string(),
             );
         });
     }
@@ -4809,7 +5949,7 @@ fn main() -> Result<()> {
                 append_log_to_ui(
                     &ui_weak,
                     &log_buf,
-                    "[Моды] Папка mods не найдена или пуста.".to_string(),
+                    "[Mods] mods folder not found or empty.".to_string(),
                 );
                 return;
             }
@@ -4826,7 +5966,7 @@ fn main() -> Result<()> {
                 append_log_to_ui(
                     &ui_weak,
                     &log_buf,
-                    format!("[Моды] Проверка обновлений модов для «{}»...", inst.name),
+                    format!("[Mods] Checking mod updates for '{}'...", inst.name),
                 );
                 let w_log = ui_weak.clone();
                 let lb_log = log_buf.clone();
@@ -4847,17 +5987,17 @@ fn main() -> Result<()> {
                     Ok(0) => append_log_to_ui(
                         &ui_weak,
                         &log_buf,
-                        "[Моды] Все установленные моды уже актуальны.".to_string(),
+                        "[Mods] All installed mods are up to date.".to_string(),
                     ),
                     Ok(n) => append_log_to_ui(
                         &ui_weak,
                         &log_buf,
-                        format!("[Моды] Обновлено модов: {}.", n),
+                        format!("[Mods] Updated mods: {}.", n),
                     ),
                     Err(e) => append_log_to_ui(
                         &ui_weak,
                         &log_buf,
-                        format!("[Моды] Ошибка обновления модов: {}", e),
+                        format!("[Mods] Mod update error: {}", e),
                     ),
                 }
             });
@@ -4973,7 +6113,7 @@ fn main() -> Result<()> {
                     append_log_to_ui(
                         &ui_weak,
                         &log_buf,
-                        format!("[Файл] Выбран файл ({}): {}", key, chosen),
+                        format!("[File] Selected file ({}): {}", key, chosen),
                     );
                 }
             });
@@ -5019,7 +6159,7 @@ fn main() -> Result<()> {
             append_log_to_ui(
                 &ui_weak,
                 &log_buf,
-                format!("[Папки] Открыта папка: {}", target.display()),
+                format!("[Folders] Opened folder: {}", target.display()),
             );
         });
     }
@@ -5038,7 +6178,7 @@ fn main() -> Result<()> {
             append_log_to_ui(
                 &ui_weak,
                 &log_buf,
-                "[Папки] Пути хранения данных сброшены на стандартные.".to_string(),
+                "[Folders] Storage paths reset to defaults.".to_string(),
             );
         });
     }
@@ -5083,7 +6223,7 @@ fn main() -> Result<()> {
                         ui.set_java_test_result(m_ui.into());
                     }
                 });
-                append_log_to_ui(&ui_weak, &log_buf, format!("[Тест Java] {}", msg));
+                append_log_to_ui(&ui_weak, &log_buf, format!("[Java Test] {}", msg));
             });
         });
     }
@@ -5123,7 +6263,7 @@ fn main() -> Result<()> {
             append_log_to_ui(
                 &ui_weak,
                 &log_buf,
-                format!("[{}] Загрузка журнала...", svc_type),
+                format!("[{}] Uploading log...", svc_type),
             );
             rt.spawn(async move {
                 match meta.upload_log(&full, &svc_type, &svc_url).await {
@@ -5154,11 +6294,742 @@ fn main() -> Result<()> {
             {
                 let mut buf = log_buf.lock().unwrap();
                 buf.clear();
-                buf.push("[AxyLauncher] Журнал очищен.".to_string());
+                buf.push("[AxyLauncher] Log cleared.".to_string());
             }
             if let Some(ui) = ui_weak.upgrade() {
-                ui.set_console_log("[AxyLauncher] Журнал очищен.\n".into());
+                ui.set_console_log("[AxyLauncher] Log cleared.\n".into());
             }
+        });
+    }
+
+    // 15b. Per-Instance Console Filter & Clear
+    {
+        let ui_weak = ui.as_weak();
+        let config = config.clone();
+        let instance_logs = instance_logs.clone();
+        ui.on_set_instance_console_filter(move |filter_idx| {
+            if let Some(ui) = ui_weak.upgrade() {
+                let sel_id = config
+                    .lock()
+                    .unwrap()
+                    .selected_instance_id
+                    .clone()
+                    .unwrap_or_default();
+                let text = {
+                    let map = instance_logs.lock().unwrap();
+                    map.get(&sel_id)
+                        .map(|buf| render_filtered_log(buf, filter_idx))
+                        .unwrap_or_default()
+                };
+                ui.set_instance_console_log(SharedString::from(text));
+            }
+        });
+    }
+    {
+        let ui_weak = ui.as_weak();
+        let config = config.clone();
+        let instance_logs = instance_logs.clone();
+        ui.on_clear_instance_console(move || {
+            let sel_id = config
+                .lock()
+                .unwrap()
+                .selected_instance_id
+                .clone()
+                .unwrap_or_default();
+            if !sel_id.is_empty() {
+                if let Some(buf) = instance_logs.lock().unwrap().get_mut(&sel_id) {
+                    buf.clear();
+                }
+            }
+            if let Some(ui) = ui_weak.upgrade() {
+                ui.set_instance_console_log("".into());
+            }
+        });
+    }
+
+    // 15c. Version Picker for Mods, Modpacks, ResourcePacks, Shaders, DataPacks, Worlds
+    {
+        let ui_weak = ui.as_weak();
+        let config = config.clone();
+        let rt = rt.clone();
+        let meta_holder = meta_holder.clone();
+        let log_buf = log_buf.clone();
+        ui.on_open_asset_versions(move |kind_str, project_id, title, provider| {
+            let ui_weak = ui_weak.clone();
+            let meta = current_meta(&meta_holder);
+            let log_buf = log_buf.clone();
+            let kind_s = kind_str.to_string();
+            let pid = project_id.to_string();
+            let title_s = title.to_string();
+            let prov = provider.to_string();
+
+            let (mc_filter, _loader_filter) = if kind_s == "modpack" {
+                (None, None)
+            } else {
+                let cfg = config.lock().unwrap();
+                let inst = cfg
+                    .instances
+                    .iter()
+                    .find(|i| Some(&i.id) == cfg.selected_instance_id.as_ref())
+                    .or_else(|| cfg.instances.first());
+                match inst {
+                    Some(i) => (
+                        Some(i.mc_version.clone()),
+                        if kind_s == "mod" {
+                            match i.loader {
+                                LoaderType::Fabric => Some("fabric".to_string()),
+                                LoaderType::Forge => Some("forge".to_string()),
+                                LoaderType::NeoForge => Some("neoforge".to_string()),
+                                LoaderType::Quilt => Some("quilt".to_string()),
+                                _ => None,
+                            }
+                        } else {
+                            None
+                        },
+                    ),
+                    None => (None, None),
+                }
+            };
+
+            if let Some(ui) = ui_weak.upgrade() {
+                ui.set_vp_kind(kind_s.clone().into());
+                ui.set_vp_project_id(pid.clone().into());
+                ui.set_vp_project_title(title_s.clone().into());
+                ui.set_vp_provider(prov.clone().into());
+                ui.set_vp_loading(true);
+                ui.set_vp_versions(ModelRc::from(Rc::new(VecModel::<UiAssetVersion>::default())));
+                ui.set_show_version_picker_modal(true);
+            }
+
+            rt.spawn(async move {
+                match meta
+                    .fetch_project_versions(&prov, &pid, mc_filter.as_deref())
+                    .await
+                {
+                    Ok(vers) => {
+                        let w = ui_weak.clone();
+                        let _ = slint::invoke_from_event_loop(move || {
+                            if let Some(ui) = w.upgrade() {
+                                let ui_vers: Vec<UiAssetVersion> = vers
+                                    .into_iter()
+                                    .map(|v| UiAssetVersion {
+                                        id: v.id.into(),
+                                        name: v.name.into(),
+                                        version_number: v.version_number.into(),
+                                        mc_versions: v.mc_versions.into(),
+                                        loaders: v.loaders.into(),
+                                        release_type: v.release_type.into(),
+                                        date: v.date.into(),
+                                        filename: v.filename.into(),
+                                        download_url: v.download_url.into(),
+                                    })
+                                    .collect();
+                                ui.set_vp_versions(ModelRc::from(Rc::new(VecModel::from(ui_vers))));
+                                ui.set_vp_loading(false);
+                            }
+                        });
+                    }
+                    Err(e) => {
+                        let w = ui_weak.clone();
+                        let _ = slint::invoke_from_event_loop(move || {
+                            if let Some(ui) = w.upgrade() {
+                                ui.set_vp_loading(false);
+                            }
+                        });
+                        append_log_to_ui(
+                            &ui_weak,
+                            &log_buf,
+                            format!("[Versions] Failed to load versions for '{}': {}", title_s, e),
+                        );
+                    }
+                }
+            });
+        });
+    }
+
+    {
+        let ui_weak = ui.as_weak();
+        let config = config.clone();
+        let data_dir = data_dir.clone();
+        let rt = rt.clone();
+        let meta_holder = meta_holder.clone();
+        let log_buf = log_buf.clone();
+        ui.on_install_asset_version(move |kind_str, project_id, title, provider, version_id, version_name| {
+            let ui_weak = ui_weak.clone();
+            let config = config.clone();
+            let data_dir = data_dir.clone();
+            let meta = current_meta(&meta_holder);
+            let log_buf = log_buf.clone();
+            let kind = AssetKind::from_str_tag(kind_str.as_str());
+            let pid = project_id.to_string();
+            let title_str = title.to_string();
+            let prov = provider.to_string();
+            let vid = version_id.to_string();
+            let vname = version_name.to_string();
+
+            if kind == AssetKind::Modpack {
+                let grp_str = ui_weak
+                    .upgrade()
+                    .map(|u| u.get_new_inst_group().trim().to_string())
+                    .unwrap_or_default();
+                let (instances_dir, icons_dir) = {
+                    let cfg = config.lock().unwrap();
+                    (
+                        cfg.resolve_instances_dir(&data_dir),
+                        cfg.resolve_icons_dir(&data_dir),
+                    )
+                };
+                if let Some(ui) = ui_weak.upgrade() {
+                    open_modpack_download_modal(&ui, &title_str, &prov);
+                }
+                let ui_weak_log = ui_weak.clone();
+                let log_buf_cb = log_buf.clone();
+                rt.spawn(async move {
+                    let _ = tokio::fs::create_dir_all(&instances_dir).await;
+                    let inst_id = dir_name_from_string(&title_str, &instances_dir, None);
+                    let instance_mc_dir = instances_dir.join(&inst_id).join(".minecraft");
+                    let _ = tokio::fs::create_dir_all(&instance_mc_dir).await;
+
+                    match meta
+                        .apply_modpack_version_to_dir(
+                            &prov,
+                            &pid,
+                            &vid,
+                            &inst_id,
+                            &title_str,
+                            &grp_str,
+                            &instance_mc_dir,
+                            move |msg| append_log_to_ui(&ui_weak_log, &log_buf_cb, msg),
+                        )
+                        .await
+                    {
+                        Ok(parsed_opt) => {
+                            let (mc_ver, loader, loader_ver) = parsed_opt.unwrap_or_else(|| {
+                                ("1.20.1".to_string(), LoaderType::Forge, "latest".to_string())
+                            });
+                            let mut inst = Instance::new_default(
+                                inst_id.clone(),
+                                title_str.clone(),
+                                grp_str,
+                                mc_ver,
+                                loader,
+                                loader_ver,
+                                false,
+                                None,
+                                "Готов",
+                            );
+                            inst.modpack_provider = prov.clone();
+                            inst.modpack_id = pid.clone();
+                            inst.modpack_version_id = vid.clone();
+                            inst.modpack_version_name = vname.clone();
+
+                            let ext_prov = match prov.as_str() {
+                                "CurseForge" => ExternalProvider::CurseForge,
+                                "FTB" => ExternalProvider::Ftb,
+                                _ => ExternalProvider::Modrinth,
+                            };
+                            finalize_modpack_instance_and_prepare(
+                                ui_weak,
+                                config,
+                                data_dir,
+                                meta,
+                                log_buf,
+                                inst,
+                                ext_prov,
+                                pid,
+                                instances_dir,
+                                icons_dir,
+                            )
+                            .await;
+                        }
+                        Err(e) => {
+                            let err_msg = format!("Ошибка загрузки сборки: {}", e);
+                            let w = ui_weak.clone();
+                            let _ = slint::invoke_from_event_loop(move || {
+                                if let Some(ui) = w.upgrade() {
+                                    ui.set_download_modal_error(true);
+                                    ui.set_download_modal_done(false);
+                                    ui.set_download_modal_status(err_msg.clone().into());
+                                    ui.set_is_busy(false);
+                                    ui.set_launch_progress(0.0);
+                                    ui.set_status_is_error(true);
+                                    ui.set_status_text(err_msg.into());
+                                }
+                            });
+                            append_log_to_ui(
+                                &ui_weak,
+                                &log_buf,
+                                format!("[Modpack] Version install failed: {}", e),
+                            );
+                        }
+                    }
+                });
+                return;
+            }
+
+            let (inst_opt, instances_dir) = {
+                let cfg = config.lock().unwrap();
+                let inst = cfg
+                    .instances
+                    .iter()
+                    .find(|i| Some(&i.id) == cfg.selected_instance_id.as_ref())
+                    .or_else(|| cfg.instances.first())
+                    .cloned();
+                (inst, cfg.resolve_instances_dir(&data_dir))
+            };
+            let Some(inst) = inst_opt else {
+                return;
+            };
+            let sub = kind.subfolder();
+            append_log_to_ui(
+                &ui_weak,
+                &log_buf,
+                format!("[Install] '{}' version '{}' ({}) -> {}...", title_str, vname, prov, sub),
+            );
+            rt.spawn(async move {
+                match meta.fetch_specific_version_download(&prov, &pid, &vid).await {
+                    Ok((filename, url)) => {
+                        let target_dir = instances_dir.join(&inst.id).join(".minecraft").join(sub);
+                        let _ = tokio::fs::create_dir_all(&target_dir).await;
+                        let mut req = meta.http().get(&url);
+                        if prov == "CurseForge" && !meta.curseforge_key().is_empty() {
+                            req = req.header("x-api-key", meta.curseforge_key());
+                        }
+                        match req.send().await {
+                            Ok(resp) if resp.status().is_success() => {
+                                if let Ok(bytes) = resp.bytes().await {
+                                    if kind == AssetKind::World && filename.to_lowercase().ends_with(".zip") {
+                                        let tmp_zip = target_dir.join(format!(".tmp_{}", filename));
+                                        let _ = tokio::fs::write(&tmp_zip, &bytes).await;
+                                        let _ = extract_world_zip(&tmp_zip, &target_dir, &title_str);
+                                        let _ = tokio::fs::remove_file(&tmp_zip).await;
+                                    } else {
+                                        let _ = tokio::fs::write(target_dir.join(&filename), &bytes).await;
+                                    }
+                                    let w = ui_weak.clone();
+                                    let insts_c = instances_dir.clone();
+                                    let inst_id_c = inst.id.clone();
+                                    match kind {
+                                        AssetKind::Mod => {
+                                            let mods = scan_installed_mods(&insts_c, &inst_id_c);
+                                            let _ = slint::invoke_from_event_loop(move || {
+                                                if let Some(ui) = w.upgrade() {
+                                                    ui.set_installed_mods(ModelRc::from(Rc::new(VecModel::from(mods))));
+                                                }
+                                            });
+                                        }
+                                        AssetKind::ResourcePack => {
+                                            let list = scan_subfolder_entries(&insts_c, &inst_id_c, "resourcepacks");
+                                            let _ = slint::invoke_from_event_loop(move || {
+                                                if let Some(ui) = w.upgrade() {
+                                                    ui.set_resource_packs(ModelRc::from(Rc::new(VecModel::from(list))));
+                                                }
+                                            });
+                                        }
+                                        AssetKind::Shader => {
+                                            let list = scan_subfolder_entries(&insts_c, &inst_id_c, "shaderpacks");
+                                            let _ = slint::invoke_from_event_loop(move || {
+                                                if let Some(ui) = w.upgrade() {
+                                                    ui.set_shader_packs(ModelRc::from(Rc::new(VecModel::from(list))));
+                                                }
+                                            });
+                                        }
+                                        AssetKind::DataPack => {
+                                            let list = scan_subfolder_entries(&insts_c, &inst_id_c, "datapacks");
+                                            let _ = slint::invoke_from_event_loop(move || {
+                                                if let Some(ui) = w.upgrade() {
+                                                    ui.set_data_packs(ModelRc::from(Rc::new(VecModel::from(list))));
+                                                }
+                                            });
+                                        }
+                                        AssetKind::World => {
+                                            let list = scan_subfolder_entries(&insts_c, &inst_id_c, "saves");
+                                            let _ = slint::invoke_from_event_loop(move || {
+                                                if let Some(ui) = w.upgrade() {
+                                                    ui.set_worlds_list(ModelRc::from(Rc::new(VecModel::from(list))));
+                                                }
+                                            });
+                                        }
+                                        AssetKind::Modpack => {}
+                                    }
+                                    append_log_to_ui(
+                                        &ui_weak,
+                                        &log_buf,
+                                        format!("[Install] Installed {} ({})", filename, vname),
+                                    );
+                                }
+                            }
+                            Ok(resp) => append_log_to_ui(
+                                &ui_weak,
+                                &log_buf,
+                                format!("[Install] Download HTTP {}", resp.status()),
+                            ),
+                            Err(e) => append_log_to_ui(
+                                &ui_weak,
+                                &log_buf,
+                                format!("[Install] Download error: {}", e),
+                            ),
+                        }
+                    }
+                    Err(e) => append_log_to_ui(
+                        &ui_weak,
+                        &log_buf,
+                        format!("[Install] Version lookup error: {}", e),
+                    ),
+                }
+            });
+        });
+    }
+
+    // 15d. Instance Editor -> Modpack Update / Rollback / Link
+    {
+        let ui_weak = ui.as_weak();
+        let config = config.clone();
+        let data_dir = data_dir.clone();
+        ui.on_link_instance_modpack(move |provider, pack_id| {
+            let prov = provider.trim().to_string();
+            let pid = pack_id.trim().to_string();
+            if pid.is_empty() {
+                return;
+            }
+            let cfg_clone = {
+                let mut cfg = config.lock().unwrap();
+                let instances_dir = cfg.resolve_instances_dir(&data_dir);
+                let target_id = cfg.selected_instance_id.clone();
+                if let Some(inst) = cfg
+                    .instances
+                    .iter_mut()
+                    .find(|i| Some(&i.id) == target_id.as_ref())
+                {
+                    inst.modpack_provider = prov.clone();
+                    inst.modpack_id = pid.clone();
+                    write_instance_cfg(&instances_dir, inst);
+                }
+                save_config(&data_dir, &cfg);
+                cfg.clone()
+            };
+            if let Some(ui) = ui_weak.upgrade() {
+                load_instance_into_editor(&ui, &cfg_clone, &data_dir);
+                ui.invoke_refresh_instance_modpack_versions();
+            }
+        });
+    }
+    {
+        let ui_weak = ui.as_weak();
+        let config = config.clone();
+        let rt = rt.clone();
+        let meta_holder = meta_holder.clone();
+        let log_buf = log_buf.clone();
+        ui.on_refresh_instance_modpack_versions(move || {
+            let ui_weak = ui_weak.clone();
+            let meta = current_meta(&meta_holder);
+            let log_buf = log_buf.clone();
+            let inst_opt = {
+                let cfg = config.lock().unwrap();
+                cfg.instances
+                    .iter()
+                    .find(|i| Some(&i.id) == cfg.selected_instance_id.as_ref())
+                    .cloned()
+            };
+            let Some(inst) = inst_opt else { return; };
+            if inst.modpack_id.trim().is_empty() {
+                return;
+            }
+            if let Some(ui) = ui_weak.upgrade() {
+                ui.set_edit_modpack_loading(true);
+            }
+            let prov = inst.modpack_provider.clone();
+            let pid = inst.modpack_id.clone();
+            let cur_vid = inst.modpack_version_id.clone();
+
+            rt.spawn(async move {
+                match meta.fetch_project_versions(&prov, &pid, None).await {
+                    Ok(vers) => {
+                        let latest_opt = vers.first().cloned();
+                        let update_avail = latest_opt
+                            .as_ref()
+                            .map(|l| !cur_vid.is_empty() && l.id != cur_vid)
+                            .unwrap_or(false);
+                        let latest_name = latest_opt.as_ref().map(|l| l.name.clone()).unwrap_or_default();
+                        let latest_id = latest_opt.as_ref().map(|l| l.id.clone()).unwrap_or_default();
+                        let w = ui_weak.clone();
+                        let _ = slint::invoke_from_event_loop(move || {
+                            if let Some(ui) = w.upgrade() {
+                                let ui_vers: Vec<UiAssetVersion> = vers
+                                    .into_iter()
+                                    .map(|v| UiAssetVersion {
+                                        id: v.id.into(),
+                                        name: v.name.into(),
+                                        version_number: v.version_number.into(),
+                                        mc_versions: v.mc_versions.into(),
+                                        loaders: v.loaders.into(),
+                                        release_type: v.release_type.into(),
+                                        date: v.date.into(),
+                                        filename: v.filename.into(),
+                                        download_url: v.download_url.into(),
+                                    })
+                                    .collect();
+                                ui.set_edit_modpack_versions(ModelRc::from(Rc::new(VecModel::from(ui_vers))));
+                                ui.set_edit_modpack_update_available(update_avail);
+                                ui.set_edit_modpack_latest_ver_name(latest_name.into());
+                                ui.set_edit_modpack_latest_ver_id(latest_id.into());
+                                ui.set_edit_modpack_loading(false);
+                            }
+                        });
+                    }
+                    Err(e) => {
+                        let w = ui_weak.clone();
+                        let _ = slint::invoke_from_event_loop(move || {
+                            if let Some(ui) = w.upgrade() {
+                                ui.set_edit_modpack_loading(false);
+                            }
+                        });
+                        append_log_to_ui(
+                            &ui_weak,
+                            &log_buf,
+                            format!("[Modpack] Failed to fetch versions: {}", e),
+                        );
+                    }
+                }
+            });
+        });
+    }
+
+    {
+        let ui_weak = ui.as_weak();
+        let config = config.clone();
+        let data_dir = data_dir.clone();
+        let rt = rt.clone();
+        let meta_holder = meta_holder.clone();
+        let log_buf = log_buf.clone();
+        ui.on_apply_instance_modpack_version(move |version_id, version_name| {
+            let ui_weak = ui_weak.clone();
+            let config = config.clone();
+            let data_dir = data_dir.clone();
+            let meta = current_meta(&meta_holder);
+            let log_buf = log_buf.clone();
+            let vid = version_id.to_string();
+            let vname = version_name.to_string();
+
+            let (inst_opt, instances_dir) = {
+                let cfg = config.lock().unwrap();
+                let inst = cfg
+                    .instances
+                    .iter()
+                    .find(|i| Some(&i.id) == cfg.selected_instance_id.as_ref())
+                    .cloned();
+                (inst, cfg.resolve_instances_dir(&data_dir))
+            };
+            let Some(inst) = inst_opt else { return; };
+            if inst.modpack_id.trim().is_empty() {
+                return;
+            }
+            if let Some(ui) = ui_weak.upgrade() {
+                ui.set_is_busy(true);
+                ui.set_launch_progress(0.25);
+            }
+            let ui_weak_log = ui_weak.clone();
+            let log_buf_cb = log_buf.clone();
+            let instance_mc_dir = instances_dir.join(&inst.id).join(".minecraft");
+            rt.spawn(async move {
+                match meta
+                    .apply_modpack_version_to_dir(
+                        &inst.modpack_provider,
+                        &inst.modpack_id,
+                        &vid,
+                        &inst.id,
+                        &inst.name,
+                        &inst.group,
+                        &instance_mc_dir,
+                        move |msg| append_log_to_ui(&ui_weak_log, &log_buf_cb, msg),
+                    )
+                    .await
+                {
+                    Ok(parsed_opt) => {
+                        let mut cfg = config.lock().unwrap();
+                        if let Some(slot) = cfg.instances.iter_mut().find(|i| i.id == inst.id) {
+                            slot.modpack_version_id = vid.clone();
+                            slot.modpack_version_name = vname.clone();
+                            if let Some((mc, loader, lver)) = parsed_opt {
+                                slot.mc_version = mc;
+                                slot.loader = loader;
+                                slot.loader_version = lver;
+                            }
+                            write_instance_cfg(&instances_dir, slot);
+                        }
+                        save_config(&data_dir, &cfg);
+                        let cfg_clone = cfg.clone();
+                        let w = ui_weak.clone();
+                        let dd = data_dir.clone();
+                        let _ = slint::invoke_from_event_loop(move || {
+                            if let Some(ui) = w.upgrade() {
+                                ui.set_is_busy(false);
+                                ui.set_launch_progress(0.0);
+                                sync_ui_from_config(&ui, &cfg_clone);
+                                load_instance_into_editor(&ui, &cfg_clone, &dd);
+                                ui.invoke_refresh_instance_modpack_versions();
+                            }
+                        });
+                        append_log_to_ui(
+                            &ui_weak,
+                            &log_buf,
+                            format!("[Modpack] Switched '{}' to version '{}'.", inst.name, vname),
+                        );
+                    }
+                    Err(e) => {
+                        let w = ui_weak.clone();
+                        let _ = slint::invoke_from_event_loop(move || {
+                            if let Some(ui) = w.upgrade() {
+                                ui.set_is_busy(false);
+                                ui.set_launch_progress(0.0);
+                            }
+                        });
+                        append_log_to_ui(
+                            &ui_weak,
+                            &log_buf,
+                            format!("[Modpack] Failed to switch version: {}", e),
+                        );
+                    }
+                }
+            });
+        });
+    }
+
+    // 15e. Settings -> Java -> Installations (Scan / Download / Remove / Use)
+    {
+        let ui_weak = ui.as_weak();
+        let config = config.clone();
+        let data_dir = data_dir.clone();
+        ui.on_refresh_java_installations(move || {
+            let java_dir = config.lock().unwrap().resolve_java_dir(&data_dir);
+            let list: Vec<UiJavaInstallation> = launcher::scan_java_installations(&java_dir)
+                .into_iter()
+                .map(|j| UiJavaInstallation {
+                    version: j.version.into(),
+                    arch: j.arch.into(),
+                    path: j.path.into(),
+                    is_managed: j.is_managed,
+                })
+                .collect();
+            if let Some(ui) = ui_weak.upgrade() {
+                ui.set_java_installations(ModelRc::from(Rc::new(VecModel::from(list))));
+                ui.set_selected_java_install_idx(-1);
+            }
+        });
+    }
+    {
+        let ui_weak = ui.as_weak();
+        let config = config.clone();
+        let data_dir = data_dir.clone();
+        let rt = rt.clone();
+        let meta_holder = meta_holder.clone();
+        let log_buf = log_buf.clone();
+        ui.on_download_managed_java(move |major| {
+            let ui_weak = ui_weak.clone();
+            let meta = current_meta(&meta_holder);
+            let log_buf = log_buf.clone();
+            let java_dir = config.lock().unwrap().resolve_java_dir(&data_dir);
+            let major_u32 = major.max(8) as u32;
+            if let Some(ui) = ui_weak.upgrade() {
+                ui.set_is_busy(true);
+                ui.set_launch_progress(0.1);
+            }
+            let w_log = ui_weak.clone();
+            let lb_log = log_buf.clone();
+            let w_prog = ui_weak.clone();
+            rt.spawn(async move {
+                let log_cb = Arc::new(move |msg: String| {
+                    append_log_to_ui(&w_log, &lb_log, msg);
+                });
+                let prog_cb = Arc::new(move |p: f32, status: String| {
+                    let w = w_prog.clone();
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(ui) = w.upgrade() {
+                            ui.set_launch_progress(p);
+                            ui.set_status_text(status.into());
+                        }
+                    });
+                });
+                match launcher::ensure_managed_java(meta.http(), &java_dir, major_u32, log_cb, prog_cb).await {
+                    Ok(path) => {
+                        append_log_to_ui(
+                            &ui_weak,
+                            &log_buf,
+                            format!("[Java] Managed Java {} ready at {}", major_u32, path.display()),
+                        );
+                    }
+                    Err(e) => {
+                        append_log_to_ui(
+                            &ui_weak,
+                            &log_buf,
+                            format!("[Java] Failed to download Java {}: {}", major_u32, e),
+                        );
+                    }
+                }
+                let w = ui_weak.clone();
+                let _ = slint::invoke_from_event_loop(move || {
+                    if let Some(ui) = w.upgrade() {
+                        ui.set_is_busy(false);
+                        ui.set_launch_progress(0.0);
+                        ui.invoke_refresh_java_installations();
+                    }
+                });
+            });
+        });
+    }
+    {
+        let ui_weak = ui.as_weak();
+        let config = config.clone();
+        let data_dir = data_dir.clone();
+        let log_buf = log_buf.clone();
+        ui.on_remove_managed_java(move |path_str| {
+            let java_dir = config.lock().unwrap().resolve_java_dir(&data_dir);
+            let p = PathBuf::from(path_str.as_str());
+            if p.starts_with(&java_dir) {
+                // Find the top-level folder under java_dir (e.g. java_dir/java-21)
+                if let Ok(rel) = p.strip_prefix(&java_dir) {
+                    if let Some(first_comp) = rel.components().next() {
+                        let root_to_del = java_dir.join(first_comp);
+                        let _ = std::fs::remove_dir_all(&root_to_del);
+                        append_log_to_ui(
+                            &ui_weak,
+                            &log_buf,
+                            format!("[Java] Removed managed Java directory: {}", root_to_del.display()),
+                        );
+                    }
+                }
+            } else {
+                append_log_to_ui(
+                    &ui_weak,
+                    &log_buf,
+                    format!("[Java] Cannot remove system Java installation: {}", p.display()),
+                );
+            }
+            if let Some(ui) = ui_weak.upgrade() {
+                ui.invoke_refresh_java_installations();
+            }
+        });
+    }
+    {
+        let ui_weak = ui.as_weak();
+        let config = config.clone();
+        let data_dir = data_dir.clone();
+        let log_buf = log_buf.clone();
+        ui.on_use_java_installation(move |path_str| {
+            let p = path_str.to_string();
+            {
+                let mut cfg = config.lock().unwrap();
+                cfg.java_path = p.clone();
+                save_config(&data_dir, &cfg);
+            }
+            if let Some(ui) = ui_weak.upgrade() {
+                ui.set_setting_java_path(p.clone().into());
+            }
+            append_log_to_ui(
+                &ui_weak,
+                &log_buf,
+                format!("[Java] Active Java path set to {}", p),
+            );
         });
     }
 
@@ -5193,7 +7064,7 @@ fn main() -> Result<()> {
                 append_log_to_ui(
                     &ui_weak,
                     &log_buf,
-                    format!("[Тема] Применён пользовательский цвет: {}", norm),
+                    format!("[Theme] Custom color applied: {}", norm),
                 );
             }
         });
@@ -5372,7 +7243,7 @@ fn main() -> Result<()> {
                                 ui.set_skin_status_text("Офлайн / обновите токен MS".into());
                             }
                         });
-                        append_log_to_ui(&ui_weak, &log_buf, format!("[Скины MS] {}", msg));
+                        append_log_to_ui(&ui_weak, &log_buf, format!("[MS Skins] {}", msg));
                     }
                 }
             });
@@ -5490,9 +7361,9 @@ fn main() -> Result<()> {
                                 ui.set_skin_status_text("Скин сброшен на стандартный".into());
                             }
                         });
-                        append_log_to_ui(&ui_weak, &log_buf, "[Скины MS] Скин сброшен.".to_string());
+                        append_log_to_ui(&ui_weak, &log_buf, "[MS Skins] Skin reset.".to_string());
                     }
-                    Err(e) => append_log_to_ui(&ui_weak, &log_buf, format!("[Скины MS] {}", e)),
+                    Err(e) => append_log_to_ui(&ui_weak, &log_buf, format!("[MS Skins] {}", e)),
                 }
             });
         });
@@ -5533,7 +7404,7 @@ fn main() -> Result<()> {
                             }
                         });
                     }
-                    Err(e) => append_log_to_ui(&ui_weak, &log_buf, format!("[Импорт скина] {}", e)),
+                    Err(e) => append_log_to_ui(&ui_weak, &log_buf, format!("[Skin Import] {}", e)),
                 }
             });
         });
@@ -5574,7 +7445,7 @@ fn main() -> Result<()> {
                             }
                         });
                     }
-                    Err(e) => append_log_to_ui(&ui_weak, &log_buf, format!("[Импорт скина] {}", e)),
+                    Err(e) => append_log_to_ui(&ui_weak, &log_buf, format!("[Skin Import] {}", e)),
                 }
             });
         });
@@ -5625,7 +7496,7 @@ fn main() -> Result<()> {
                     append_log_to_ui(
                         &ui_weak,
                         &log_buf,
-                        "[Импорт скина] Укажите путь к .png файлу в поле ввода или положите его в папку скинов.".to_string(),
+                        "[Skin Import] Enter a .png file path or place it in the skins folder.".to_string(),
                     );
                 }
             });
@@ -5692,7 +7563,7 @@ fn main() -> Result<()> {
                         append_log_to_ui(
                             &ui_weak,
                             &log_buf,
-                            "[Скины MS] Скин и плащ успешно обновлены на аккаунте Microsoft.".to_string(),
+                            "[MS Skins] Skin and cape updated on Microsoft account.".to_string(),
                         );
                     }
                     Some(e) => {
@@ -5703,7 +7574,7 @@ fn main() -> Result<()> {
                                 ui.set_skin_status_text("Ошибка загрузки (см. Консоль)".into());
                             }
                         });
-                        append_log_to_ui(&ui_weak, &log_buf, format!("[Скины MS] {}", e_ui));
+                        append_log_to_ui(&ui_weak, &log_buf, format!("[MS Skins] {}", e_ui));
                     }
                 }
             });

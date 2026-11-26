@@ -491,6 +491,16 @@ pub struct Instance {
     #[serde(default)]
     pub components: Vec<InstanceComponent>,
 
+    // Managed Modpack metadata (for version updates / rollbacks in Instance Editor)
+    #[serde(default)]
+    pub modpack_provider: String,
+    #[serde(default)]
+    pub modpack_id: String,
+    #[serde(default)]
+    pub modpack_version_id: String,
+    #[serde(default)]
+    pub modpack_version_name: String,
+
     #[serde(default)]
     pub last_played: Option<String>,
     #[serde(default)]
@@ -698,6 +708,10 @@ impl Instance {
             custom_loader_path: String::new(),
             custom_loader_main_class: String::new(),
             components: Vec::new(),
+            modpack_provider: String::new(),
+            modpack_id: String::new(),
+            modpack_version_id: String::new(),
+            modpack_version_name: String::new(),
             last_played: Some(status.to_string()),
             last_played_ts: 0,
             total_playtime_minutes: 0,
