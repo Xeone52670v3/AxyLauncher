@@ -12,6 +12,7 @@ mod models;
 mod skins;
 mod tray;
 mod ui_icons;
+mod updater;
 
 use crate::auth::{
     authenticate_yggdrasil, create_offline_account, fetch_patcher_versions,
@@ -2442,147 +2443,241 @@ fn main() -> Result<()> {
         });
     }
 
-    // Check launcher updates via GitHub Releases API (Xeone52670v3/AxyLauncher)
+    // Check & auto-install launcher updates via GitHub Releases API (Xeone52670v3/AxyLauncher)
     {
-        const APP_VERSION: &str = "0.1.2";
-        const GITHUB_REPO: &str = "Xeone52670v3/AxyLauncher";
+        let install_kind = updater::detect_install_kind();
+        ui.set_update_install_kind_label(install_kind.label().into());
 
-        fn parse_ver_tuple(raw: &str) -> Vec<u64> {
-            let clean = raw.trim().trim_start_matches(['v', 'V']);
-            let core = clean.split(['-', '+']).next().unwrap_or(clean);
-            let mut parts: Vec<u64> = core
-                .split('.')
-                .map(|p| p.parse::<u64>().unwrap_or(0))
-                .collect();
-            while parts.len() > 1 && *parts.last().unwrap_or(&0) == 0 {
-                parts.pop();
+        let run_update_check = {
+            let ui_weak = ui.as_weak();
+            let rt = rt.clone();
+            let meta_holder = meta_holder.clone();
+            let log_buf = log_buf.clone();
+            move |silent: bool| {
+                if !silent {
+                    if let Some(ui) = ui_weak.upgrade() {
+                        ui.set_update_checking(true);
+                        ui.set_update_available(false);
+                        ui.set_update_can_auto_install(false);
+                        ui.set_update_latest_url("".into());
+                        ui.set_update_asset_name("".into());
+                        ui.set_update_asset_url("".into());
+                        ui.set_update_status(i18n::translate_current("Проверка...").into());
+                    }
+                }
+                let meta = current_meta(&meta_holder);
+                let ui_weak = ui_weak.clone();
+                let log_buf = log_buf.clone();
+                rt.spawn(async move {
+                    let repo_releases_url =
+                        format!("https://github.com/{}/releases", updater::GITHUB_REPO);
+                    match updater::check_latest_release(meta.http()).await {
+                        Ok(None) => {
+                            if silent {
+                                return;
+                            }
+                            let msg = i18n::translate_current(
+                                "Релизов на GitHub пока нет. Текущая версия: v{cur}",
+                            )
+                            .replace("{cur}", updater::APP_VERSION);
+                            append_log_to_ui(&ui_weak, &log_buf, format!("[Update] {}", msg));
+                            let _ = slint::invoke_from_event_loop(move || {
+                                if let Some(ui) = ui_weak.upgrade() {
+                                    ui.set_update_checking(false);
+                                    ui.set_update_available(false);
+                                    ui.set_update_can_auto_install(false);
+                                    ui.set_update_latest_url(repo_releases_url.into());
+                                    ui.set_update_status(msg.into());
+                                }
+                            });
+                        }
+                        Ok(Some(res)) => {
+                            if silent && !res.is_newer {
+                                return;
+                            }
+                            let can_auto = res.is_newer
+                                && res.install_kind.supports_auto_install()
+                                && res.asset_url.is_some();
+                            let msg = if res.is_newer {
+                                if !res.install_kind.supports_auto_install() {
+                                    i18n::translate_current(
+                                        "Доступно обновление: {tag}. Установлено через системный пакет — обновите вручную через пакетный менеджер или GitHub Releases.",
+                                    )
+                                    .replace("{tag}", &res.tag)
+                                } else if res.asset_url.is_some() {
+                                    i18n::translate_current(
+                                        "Доступно обновление: {tag} (текущая v{cur})",
+                                    )
+                                    .replace("{tag}", &res.tag)
+                                    .replace("{cur}", updater::APP_VERSION)
+                                } else {
+                                    i18n::translate_current(
+                                        "Доступно обновление: {tag} (подходящий файл не найден — скачайте на GitHub)",
+                                    )
+                                    .replace("{tag}", &res.tag)
+                                }
+                            } else if res.tag.is_empty() {
+                                i18n::translate_current("Установлена актуальная версия: v{cur}")
+                                    .replace("{cur}", updater::APP_VERSION)
+                            } else {
+                                i18n::translate_current(
+                                    "Установлена последняя версия (v{cur}, на GitHub: {tag})",
+                                )
+                                .replace("{cur}", updater::APP_VERSION)
+                                .replace("{tag}", &res.tag)
+                            };
+                            append_log_to_ui(&ui_weak, &log_buf, format!("[Update] {}", msg));
+                            let asset_name = res.asset_name.unwrap_or_default();
+                            let asset_url = res.asset_url.unwrap_or_default();
+                            let html_url = res.html_url;
+                            let is_newer = res.is_newer;
+                            let _ = slint::invoke_from_event_loop(move || {
+                                if let Some(ui) = ui_weak.upgrade() {
+                                    ui.set_update_checking(false);
+                                    ui.set_update_available(is_newer);
+                                    ui.set_update_can_auto_install(can_auto);
+                                    ui.set_update_latest_url(html_url.into());
+                                    ui.set_update_asset_name(asset_name.into());
+                                    ui.set_update_asset_url(asset_url.into());
+                                    ui.set_update_status(msg.into());
+                                }
+                            });
+                        }
+                        Err(e) => {
+                            if silent {
+                                return;
+                            }
+                            let msg =
+                                i18n::translate_current("Не удалось проверить обновления: {err}")
+                                    .replace("{err}", &e.to_string());
+                            append_log_to_ui(&ui_weak, &log_buf, format!("[Update] {}", msg));
+                            let _ = slint::invoke_from_event_loop(move || {
+                                if let Some(ui) = ui_weak.upgrade() {
+                                    ui.set_update_checking(false);
+                                    ui.set_update_available(false);
+                                    ui.set_update_can_auto_install(false);
+                                    ui.set_update_status(msg.into());
+                                }
+                            });
+                        }
+                    }
+                });
             }
-            parts
+        };
+
+        {
+            let run_manual = run_update_check.clone();
+            ui.on_check_launcher_updates(move || {
+                run_manual(false);
+            });
         }
 
+        // Silent background check on startup if enabled in settings
+        if config.lock().unwrap().auto_check_updates {
+            run_update_check(true);
+        }
+
+        // Download and apply update for current platform
         let ui_weak = ui.as_weak();
         let rt = rt.clone();
         let meta_holder = meta_holder.clone();
         let log_buf = log_buf.clone();
+        ui.on_install_launcher_update(move || {
+            let (asset_url, asset_name) = match ui_weak.upgrade() {
+                Some(ui) => {
+                    let u = ui.get_update_asset_url().to_string();
+                    let n = ui.get_update_asset_name().to_string();
+                    if u.is_empty() || n.is_empty() {
+                        return;
+                    }
+                    ui.set_update_installing(true);
+                    ui.set_update_status(
+                        i18n::translate_current("Скачивание обновления...").into(),
+                    );
+                    (u, n)
+                }
+                None => return,
+            };
 
-        ui.on_check_launcher_updates(move || {
-            if let Some(ui) = ui_weak.upgrade() {
-                ui.set_update_checking(true);
-                ui.set_update_available(false);
-                ui.set_update_latest_url("".into());
-                ui.set_update_status(i18n::translate_current("Проверка...").into());
-            }
             let meta = current_meta(&meta_holder);
             let ui_weak = ui_weak.clone();
             let log_buf = log_buf.clone();
+            let kind = updater::detect_install_kind();
+            append_log_to_ui(
+                &ui_weak,
+                &log_buf,
+                format!("[Update] Downloading {} ({})", asset_name, kind.label()),
+            );
 
             rt.spawn(async move {
-                let api_url = format!("https://api.github.com/repos/{}/releases/latest", GITHUB_REPO);
-                let repo_releases_url = format!("https://github.com/{}/releases", GITHUB_REPO);
-                let resp = meta
-                    .http()
-                    .get(&api_url)
-                    .header("Accept", "application/vnd.github+json")
-                    .header("User-Agent", format!("AxyLauncher/{}", APP_VERSION))
-                    .send()
-                    .await;
-
-                match resp {
-                    Ok(r) if r.status().as_u16() == 404 => {
-                        let msg = i18n::translate_current(
-                            "Релизов на GitHub пока нет. Текущая версия: v{cur}",
-                        )
-                        .replace("{cur}", APP_VERSION);
-                        append_log_to_ui(&ui_weak, &log_buf, format!("[Update] {}", msg));
+                let ui_prog = ui_weak.clone();
+                let res = updater::download_and_apply_update(
+                    meta.http(),
+                    &asset_url,
+                    &asset_name,
+                    &kind,
+                    move |done, total| {
+                        let done_mb = done as f64 / (1024.0 * 1024.0);
+                        let msg = if total > 0 {
+                            let total_mb = total as f64 / (1024.0 * 1024.0);
+                            format!(
+                                "{} ({:.1} / {:.1} MB)",
+                                i18n::translate_current("Скачивание обновления..."),
+                                done_mb,
+                                total_mb
+                            )
+                        } else {
+                            format!(
+                                "{} ({:.1} MB)",
+                                i18n::translate_current("Скачивание обновления..."),
+                                done_mb
+                            )
+                        };
+                        let ui_p = ui_prog.clone();
                         let _ = slint::invoke_from_event_loop(move || {
-                            if let Some(ui) = ui_weak.upgrade() {
-                                ui.set_update_checking(false);
-                                ui.set_update_available(false);
-                                ui.set_update_latest_url(repo_releases_url.into());
+                            if let Some(ui) = ui_p.upgrade() {
                                 ui.set_update_status(msg.into());
                             }
                         });
-                    }
-                    Ok(r) if r.status().is_success() => {
-                        match r.json::<serde_json::Value>().await {
-                            Ok(json) => {
-                                let tag = json
-                                    .get("tag_name")
-                                    .and_then(|v| v.as_str())
-                                    .unwrap_or("")
-                                    .to_string();
-                                let html_url = json
-                                    .get("html_url")
-                                    .and_then(|v| v.as_str())
-                                    .unwrap_or(&repo_releases_url)
-                                    .to_string();
+                    },
+                )
+                .await;
 
-                                let cur_v = parse_ver_tuple(APP_VERSION);
-                                let latest_v = parse_ver_tuple(&tag);
-                                let is_newer = !tag.is_empty() && latest_v > cur_v;
-                                let msg = if is_newer {
-                                    i18n::translate_current(
-                                        "Доступно обновление: {tag} (текущая v{cur})",
-                                    )
-                                    .replace("{tag}", &tag)
-                                    .replace("{cur}", APP_VERSION)
-                                } else if tag.is_empty() {
-                                    i18n::translate_current("Установлена актуальная версия: v{cur}")
-                                        .replace("{cur}", APP_VERSION)
-                                } else {
-                                    i18n::translate_current(
-                                        "Установлена последняя версия (v{cur}, на GitHub: {tag})",
-                                    )
-                                    .replace("{cur}", APP_VERSION)
-                                    .replace("{tag}", &tag)
-                                };
-                                append_log_to_ui(&ui_weak, &log_buf, format!("[Update] {}", msg));
-                                let _ = slint::invoke_from_event_loop(move || {
-                                    if let Some(ui) = ui_weak.upgrade() {
-                                        ui.set_update_checking(false);
-                                        ui.set_update_available(is_newer);
-                                        ui.set_update_latest_url(html_url.into());
-                                        ui.set_update_status(msg.into());
-                                    }
-                                });
+                match res {
+                    Ok(should_exit) => {
+                        let msg = if should_exit {
+                            i18n::translate_current(
+                                "Обновление скачано. Запуск установщика и перезапуск...",
+                            )
+                            .to_string()
+                        } else {
+                            i18n::translate_current(
+                                "Образ обновления открыт. Завершите установку вручную.",
+                            )
+                            .to_string()
+                        };
+                        append_log_to_ui(&ui_weak, &log_buf, format!("[Update] {}", msg));
+                        let ui_done = ui_weak.clone();
+                        let _ = slint::invoke_from_event_loop(move || {
+                            if let Some(ui) = ui_done.upgrade() {
+                                ui.set_update_status(msg.into());
+                                if !should_exit {
+                                    ui.set_update_installing(false);
+                                }
                             }
-                            Err(e) => {
-                                let msg = i18n::translate_current(
-                                    "Ошибка разбора ответа GitHub: {err}",
-                                )
-                                .replace("{err}", &e.to_string());
-                                append_log_to_ui(&ui_weak, &log_buf, format!("[Update] {}", msg));
-                                let _ = slint::invoke_from_event_loop(move || {
-                                    if let Some(ui) = ui_weak.upgrade() {
-                                        ui.set_update_checking(false);
-                                        ui.set_update_available(false);
-                                        ui.set_update_status(msg.into());
-                                    }
-                                });
-                            }
+                        });
+                        if should_exit {
+                            tokio::time::sleep(std::time::Duration::from_millis(350)).await;
+                            std::process::exit(0);
                         }
                     }
-                    Ok(r) => {
-                        let msg = i18n::translate_current("GitHub API вернул статус {code}")
-                            .replace("{code}", &r.status().to_string());
-                        append_log_to_ui(&ui_weak, &log_buf, format!("[Update] {}", msg));
-                        let _ = slint::invoke_from_event_loop(move || {
-                            if let Some(ui) = ui_weak.upgrade() {
-                                ui.set_update_checking(false);
-                                ui.set_update_available(false);
-                                ui.set_update_status(msg.into());
-                            }
-                        });
-                    }
                     Err(e) => {
-                        let msg =
-                            i18n::translate_current("Не удалось проверить обновления: {err}")
-                                .replace("{err}", &e.to_string());
+                        let msg = i18n::translate_current("Ошибка установки обновления: {err}")
+                            .replace("{err}", &e.to_string());
                         append_log_to_ui(&ui_weak, &log_buf, format!("[Update] {}", msg));
                         let _ = slint::invoke_from_event_loop(move || {
                             if let Some(ui) = ui_weak.upgrade() {
-                                ui.set_update_checking(false);
-                                ui.set_update_available(false);
+                                ui.set_update_installing(false);
                                 ui.set_update_status(msg.into());
                             }
                         });

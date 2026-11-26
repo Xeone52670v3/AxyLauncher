@@ -2010,10 +2010,16 @@ export component MainWindow inherits Window {
     in-out property <string> app-repo-url: "https://github.com/Xeone52670v3/AxyLauncher";
     in-out property <bool> show-folders-menu: false;
     in-out property <bool> update-checking: false;
+    in-out property <bool> update-installing: false;
+    in-out property <bool> update-can-auto-install: false;
     in-out property <string> update-status: "";
     in-out property <string> update-latest-url: "";
+    in-out property <string> update-asset-name: "";
+    in-out property <string> update-asset-url: "";
+    in-out property <string> update-install-kind-label: "";
     in-out property <bool> update-available: false;
     callback check-launcher-updates();
+    callback install-launcher-update();
     in-out property <int> launcher-inner-tab: 0; // 0=Возможности и Папки, 1=Интерфейс, 2=Моды, 3=Консоль, 4=Задачи
     in-out property <int> mc-inner-tab: 0; // 0=Настройки, 1=Твики, 2=Ely.by и Патчер
     in-out property <int> java-inner-tab: 0; // 0=Java и Память, 1=Команды и Среда
@@ -6942,11 +6948,12 @@ export component MainWindow inherits Window {
                                     alignment: start;
                                     Text { text: Tr.t("Версия:") + " " + root.app-version; color: M3.primary; font-size: 12px; font-weight: 700; }
                                     Text { text: Tr.t("Лицензия:") + " GPL-3.0-only"; color: M3.on-surface-variant; font-size: 12px; }
+                                    if root.update-install-kind-label != "" : Text { text: "• " + root.update-install-kind-label; color: M3.on-surface-variant; font-size: 12px; }
                                 }
                             }
                         }
 
-                        // Updates card (GitHub Releases check)
+                        // Updates card (GitHub Releases check & auto-update)
                         Rectangle {
                             background: M3.surface-low;
                             border-radius: 22px;
@@ -6957,7 +6964,7 @@ export component MainWindow inherits Window {
                                 spacing: 10px;
                                 Text { text: Tr.t("Обновления (GitHub)"); color: M3.on-surface; font-size: 15px; font-weight: 800; }
                                 Text {
-                                    text: Tr.t("Проверка новых версий выполняется через GitHub Releases. Автоматическая установка под платформу будет добавлена позже.");
+                                    text: Tr.t("Проверка и установка обновлений через GitHub Releases (Windows MSI/EXE, Linux AppImage/Flatpak, macOS DMG; системные пакеты Linux обновляются вручную).");
                                     color: M3.on-surface-variant;
                                     font-size: 12px;
                                     wrap: word-wrap;
@@ -6969,8 +6976,17 @@ export component MainWindow inherits Window {
                                         text: root.update-checking ? Tr.t("Проверка...") : Tr.t("Проверить обновления");
                                         svg-path: "M17.65 6.35A7.958 7.958 0 0012 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08A5.99 5.99 0 0112 18c-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z";
                                         clicked => {
-                                            if !root.update-checking {
+                                            if !root.update-checking && !root.update-installing {
                                                 root.check-launcher-updates();
+                                            }
+                                        }
+                                    }
+                                    if root.update-available && root.update-can-auto-install : M3PrimaryButton {
+                                        text: root.update-installing ? Tr.t("Установка...") : Tr.t("Скачать и установить");
+                                        svg-path: "M5 20h14v-2H5v2zM19 9h-4V3H9v6H5l7 7 7-7z";
+                                        clicked => {
+                                            if !root.update-installing {
+                                                root.install-launcher-update();
                                             }
                                         }
                                     }
