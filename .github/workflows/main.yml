@@ -114,8 +114,7 @@
             run: |
               flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
               flatpak install --user -y flathub org.freedesktop.Platform//24.08 org.freedesktop.Sdk//24.08
-              flatpak-builder --user --force-clean target/flatpak-build packaging/io.github.xeone52670v3.AxyLauncher.yml
-              flatpak build-export target/flatpak-repo target/flatpak-build
+              flatpak-builder --user --force-clean --repo=target/flatpak-repo target/flatpak-build packaging/io.github.xeone52670v3.AxyLauncher.yml
               flatpak build-bundle target/flatpak-repo out/AxyLauncher-linux-x86_64.flatpak io.github.xeone52670v3.AxyLauncher
 
           - uses: actions/upload-artifact@v4
