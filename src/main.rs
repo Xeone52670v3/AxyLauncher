@@ -2444,7 +2444,7 @@ fn main() -> Result<()> {
 
     // Check launcher updates via GitHub Releases API (Xeone52670v3/AxyLauncher)
     {
-        const APP_VERSION: &str = "0.1-a";
+        const APP_VERSION: &str = "0.1.2";
         const GITHUB_REPO: &str = "Xeone52670v3/AxyLauncher";
 
         fn parse_ver_tuple(raw: &str) -> Vec<u64> {

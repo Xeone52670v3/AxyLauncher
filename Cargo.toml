@@ -1,6 +1,6 @@
 [package]
 name = "axylauncher"
-version = "0.1.0"
+version = "0.1.2"
 edition = "2021"
 description = "AxyLauncher — Minecraft launcher in Rust inspired by FreesmLauncher with Material Design 3 UI"
 license = "GPL-3.0-only"
