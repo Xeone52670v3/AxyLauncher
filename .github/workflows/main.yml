@@ -1,1 +1,171 @@
+name: Build & Release
 
+    on:
+      push:
+        tags:
+          - "v*"
+      workflow_dispatch:
+        inputs:
+          tag:
+            description: "Release tag (e.g. v0.1)"
+            required: true
+            default: "v0.1"
+          create_release:
+            description: "Publish artifacts to GitHub Release"
+            type: boolean
+            default: true
+
+    permissions:
+      contents: write
+
+    env:
+      CARGO_TERM_COLOR: always
+
+    jobs:
+      build-windows:
+        name: Windows (.exe + .msi)
+        runs-on: windows-latest
+        steps:
+          - uses: actions/checkout@v4
+
+          - uses: dtolnay/rust-toolchain@stable
+
+          - uses: Swatinem/rust-cache@v2
+
+          - name: Build release binary
+            run: cargo build --release
+
+          - name: Prepare portable .exe
+            shell: pwsh
+            run: |
+              New-Item -ItemType Directory -Force -Path out | Out-Null
+              Copy-Item target\release\axylauncher.exe out\AxyLauncher-windows-x86_64.exe
+
+          - name: Build .msi installer (WiX)
+            shell: pwsh
+            run: |
+              dotnet tool install --global wix
+              $ver = (Select-String -Path Cargo.toml -Pattern '^version\s*=\s*"([^"]+)"').Matches[0].Groups[1].Value
+              wix build packaging\axylauncher.wxs -d Version=$ver -o out\AxyLauncher-windows-x86_64.msi
+
+          - uses: actions/upload-artifact@v4
+            with:
+              name: windows-installers
+              path: out/*
+
+      build-linux:
+        name: Linux (.AppImage, .deb, .rpm, .pacman, .flatpak)
+        runs-on: ubuntu-latest
+        steps:
+          - uses: actions/checkout@v4
+
+          - name: Install system build dependencies
+            run: |
+              sudo apt-get update
+              sudo apt-get install -y \
+                pkg-config libfontconfig1-dev libxkbcommon-dev libxkbcommon-x11-dev \
+                libwayland-dev libdbus-1-dev libssl-dev \
+                libxcb-shape0-dev libxcb-xfixes0-dev libxcb-render0-dev \
+                libx11-dev libxi-dev libxcursor-dev libxrandr-dev \
+                libgl1-mesa-dev libegl1-mesa-dev \
+                flatpak flatpak-builder
+
+          - uses: dtolnay/rust-toolchain@stable
+
+          - uses: Swatinem/rust-cache@v2
+
+          - name: Build release binary
+            run: cargo build --release
+
+          - name: Build .deb, .rpm, and .pkg.tar.zst (pacman) via nFPM
+            run: |
+              mkdir -p out
+              VERSION=$(grep -m1 '^version' Cargo.toml | sed -E 's/.*"([^"]+)".*/\1/')
+              export VERSION
+              NFPM_VER="2.41.1"
+              curl -sSL "https://github.com/goreleaser/nfpm/releases/download/v${NFPM_VER}/nfpm_${NFPM_VER}_Linux_x86_64.tar.gz" | tar -xz -C /tmp nfpm
+              /tmp/nfpm pkg -f packaging/nfpm.yaml -p deb -t "out/AxyLauncher-${VERSION}-linux-amd64.deb"
+              /tmp/nfpm pkg -f packaging/nfpm.yaml -p rpm -t "out/AxyLauncher-${VERSION}-linux-x86_64.rpm"
+              /tmp/nfpm pkg -f packaging/nfpm.yaml -p archlinux -t "out/AxyLauncher-${VERSION}-linux-x86_64.pkg.tar.zst"
+
+          - name: Build .AppImage
+            run: |
+              APPDIR=target/AppDir
+              rm -rf "$APPDIR"
+              mkdir -p "$APPDIR/usr/bin" "$APPDIR/usr/share/applications" "$APPDIR/usr/share/icons/hicolor/scalable/apps"
+              cp target/release/axylauncher "$APPDIR/usr/bin/axylauncher"
+              chmod +x "$APPDIR/usr/bin/axylauncher"
+              cp packaging/axylauncher.desktop "$APPDIR/axylauncher.desktop"
+              cp packaging/axylauncher.desktop "$APPDIR/usr/share/applications/axylauncher.desktop"
+              cp packaging/axylauncher.svg "$APPDIR/axylauncher.svg"
+              cp packaging/axylauncher.svg "$APPDIR/usr/share/icons/hicolor/scalable/apps/axylauncher.svg"
+              ln -sf axylauncher.svg "$APPDIR/.DirIcon"
+              cat > "$APPDIR/AppRun" << 'EOF'
+              #!/usr/bin/env bash
+              HERE="$(dirname "$(readlink -f "${0}")")"
+              exec "${HERE}/usr/bin/axylauncher" "$@"
+              EOF
+              chmod +x "$APPDIR/AppRun"
+              curl -sSL -o /tmp/appimagetool "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage"
+              chmod +x /tmp/appimagetool
+              ARCH=x86_64 /tmp/appimagetool --appimage-extract-and-run "$APPDIR" out/AxyLauncher-linux-x86_64.AppImage
+
+          - name: Build .flatpak bundle
+            run: |
+              flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+              flatpak install --user -y flathub org.freedesktop.Platform//24.08 org.freedesktop.Sdk//24.08
+              flatpak-builder --user --force-clean target/flatpak-build packaging/io.github.xeone52670v3.AxyLauncher.yml
+              flatpak build-export target/flatpak-repo target/flatpak-build
+              flatpak build-bundle target/flatpak-repo out/AxyLauncher-linux-x86_64.flatpak io.github.xeone52670v3.AxyLauncher
+
+          - uses: actions/upload-artifact@v4
+            with:
+              name: linux-packages
+              path: out/*
+
+      build-macos:
+        name: macOS (.dmg)
+        runs-on: macos-latest
+        steps:
+          - uses: actions/checkout@v4
+
+          - uses: dtolnay/rust-toolchain@stable
+
+          - uses: Swatinem/rust-cache@v2
+
+          - name: Build .app bundle and .dmg
+            run: |
+              chmod +x build_macos.sh
+              ./build_macos.sh
+              mkdir -p out dist/macos/dmg-stage
+              cp -R dist/macos/AxyLauncher.app dist/macos/dmg-stage/
+              ln -s /Applications dist/macos/dmg-stage/Applications
+              hdiutil create -volname "AxyLauncher" -srcfolder dist/macos/dmg-stage -ov -format UDZO out/AxyLauncher-macos-arm64.dmg
+
+          - uses: actions/upload-artifact@v4
+            with:
+              name: macos-dmg
+              path: out/*
+
+      release:
+        name: Publish GitHub Release
+        needs: [build-windows, build-linux, build-macos]
+        if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.create_release)
+        runs-on: ubuntu-latest
+        steps:
+          - name: Download all artifacts
+            uses: actions/download-artifact@v4
+            with:
+              path: release-files
+              merge-multiple: true
+
+          - name: List release assets
+            run: ls -lh release-files/
+
+          - name: Create or update GitHub Release
+            uses: softprops/action-gh-release@v2
+            with:
+              tag_name: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+              name: "AxyLauncher ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}"
+              generate_release_notes: true
+              files: release-files/*
