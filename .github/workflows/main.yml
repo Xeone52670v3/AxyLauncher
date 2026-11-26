@@ -46,7 +46,8 @@
             run: |
               dotnet tool install --global wix --version 4.0.6
               $ver = (Select-String -Path Cargo.toml -Pattern '^version\s*=\s*"([^"]+)"').Matches[0].Groups[1].Value
-              wix build packaging\axylauncher.wxs -d Version=$ver -o out\AxyLauncher-windows-x86_64.msi
+              wix build packaging\axylauncher.wxs -d Version=$ver -pdbtype none -o out\AxyLauncher-windows-x86_64.msi
+              Remove-Item -Force -ErrorAction SilentlyContinue out\*.wixpdb
 
           - uses: actions/upload-artifact@v4
             with:
