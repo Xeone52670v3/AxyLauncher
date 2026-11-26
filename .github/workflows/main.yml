@@ -44,7 +44,7 @@
           - name: Build .msi installer (WiX)
             shell: pwsh
             run: |
-              dotnet tool install --global wix
+              dotnet tool install --global wix --version 4.0.6
               $ver = (Select-String -Path Cargo.toml -Pattern '^version\s*=\s*"([^"]+)"').Matches[0].Groups[1].Value
               wix build packaging\axylauncher.wxs -d Version=$ver -o out\AxyLauncher-windows-x86_64.msi
 
