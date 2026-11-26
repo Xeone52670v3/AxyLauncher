@@ -2748,13 +2748,58 @@ export component MainWindow inherits Window {
                             content-spacing: 8px;
                             background-clicked => { root.select-instance(""); }
 
-                            for inst[idx] in root.instances : Rectangle {
-                                min-height: root.setting-instance-card-size == 0 ? 58px : (root.setting-instance-card-size == 2 ? 96px : 78px);
-                                border-radius: 20px * M3.radius-scale;
-                                background: idx == root.selected-instance-index ? M3.primary-container : (inst-t.has-hover ? M3.surface-high : M3.surface-low);
-                                border-width: idx == root.selected-instance-index ? 2px : 1px;
-                                border-color: idx == root.selected-instance-index ? M3.primary : M3.outline-variant;
-                                animate background, border-color { duration: 130ms; }
+                            inst-list-host := Rectangle {
+                                background: transparent;
+                                in-out property <length> active-y: 0px;
+                                in-out property <length> active-h: 78px;
+
+                                // Jumping Active Instance Capsule
+                                Rectangle {
+                                    x: 0px;
+                                    width: parent.width;
+                                    y: inst-list-host.active-y;
+                                    height: inst-list-host.active-h;
+                                    border-radius: 20px * M3.radius-scale;
+                                    background: M3.primary-container;
+                                    border-width: 2px;
+                                    border-color: M3.primary;
+                                    opacity: root.selected-instance-index >= 0 && root.selected-instance-index < root.instances.length ? 1.0 : 0.0;
+                                    animate y, height { duration: M3.animations-enabled ? 240ms : 0ms; easing: cubic-bezier(0.22, 1.0, 0.36, 1.0); }
+                                    animate opacity { duration: M3.animations-enabled ? 150ms : 0ms; }
+                                }
+
+                                VerticalLayout {
+                                    spacing: 8px;
+
+                                    for inst[idx] in root.instances : Rectangle {
+                                        property <bool> is-selected: idx == root.selected-instance-index;
+                                        property <length> card-y: self.y;
+                                        property <length> card-h: self.height;
+                                        init => {
+                                            if self.is-selected {
+                                                inst-list-host.active-y = self.y;
+                                                inst-list-host.active-h = self.height;
+                                            }
+                                        }
+                                        changed is-selected => {
+                                            if self.is-selected {
+                                                inst-list-host.active-y = self.y;
+                                                inst-list-host.active-h = self.height;
+                                            }
+                                        }
+                                        changed card-y => {
+                                            if self.is-selected { inst-list-host.active-y = self.y; }
+                                        }
+                                        changed card-h => {
+                                            if self.is-selected { inst-list-host.active-h = self.height; }
+                                        }
+
+                                        min-height: root.setting-instance-card-size == 0 ? 58px : (root.setting-instance-card-size == 2 ? 96px : 78px);
+                                        border-radius: 20px * M3.radius-scale;
+                                        background: self.is-selected ? transparent : (inst-t.has-hover ? M3.surface-high : M3.surface-low);
+                                        border-width: self.is-selected ? 0px : 1px;
+                                        border-color: self.is-selected ? transparent : M3.outline-variant;
+                                        animate background, border-color { duration: 130ms; }
 
                                 HorizontalLayout {
                                     padding: root.setting-instance-card-size == 0 ? 10px : (root.setting-instance-card-size == 2 ? 18px : 14px);
@@ -2844,12 +2889,20 @@ export component MainWindow inherits Window {
                                     }
                                 }
 
-                                inst-t := TouchArea {
-                                    mouse-cursor: pointer;
-                                    clicked => { root.select-instance(inst.id); }
-                                    double-clicked => {
-                                        root.select-instance(inst.id);
-                                        root.launch-selected-instance(false);
+                                        inst-t := TouchArea {
+                                            mouse-cursor: pointer;
+                                            clicked => {
+                                                inst-list-host.active-y = parent.y;
+                                                inst-list-host.active-h = parent.height;
+                                                root.select-instance(inst.id);
+                                            }
+                                            double-clicked => {
+                                                inst-list-host.active-y = parent.y;
+                                                inst-list-host.active-h = parent.height;
+                                                root.select-instance(inst.id);
+                                                root.launch-selected-instance(false);
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -7265,7 +7318,6 @@ export component MainWindow inherits Window {
                     f-touch := TouchArea {
                         mouse-cursor: pointer;
                         clicked => {
-                            root.show-folders-menu = false;
                             root.open-configured-folder(fitem.key);
                         }
                     }
