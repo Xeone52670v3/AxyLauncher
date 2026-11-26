@@ -6152,6 +6152,10 @@ fn main() -> Result<()> {
                 "assets" => tmp_cfg.resolve_assets_dir(&data_dir),
                 "libraries" => tmp_cfg.resolve_libraries_dir(&data_dir),
                 "exports" => tmp_cfg.resolve_exports_dir(&data_dir),
+                "themes" => tmp_cfg.effective_data_root(&data_dir).join("themes"),
+                "cats" => tmp_cfg.effective_data_root(&data_dir).join("cats"),
+                "instance_icons" => tmp_cfg.resolve_instance_icons_dir(&data_dir),
+                "logs" => tmp_cfg.effective_data_root(&data_dir).join("logs"),
                 _ => tmp_cfg.effective_data_root(&data_dir),
             };
             let _ = std::fs::create_dir_all(&target);

@@ -1112,6 +1112,7 @@ component M3ToolbarButton inherits Rectangle {
     in property <string> svg-path;
     in property <bool> active: false;
     in property <bool> managed-pill: false;
+    in property <bool> has-dropdown: false;
     callback clicked();
 
     height: 36px;
@@ -1121,7 +1122,7 @@ component M3ToolbarButton inherits Rectangle {
 
     HorizontalLayout {
         padding-left: 14px;
-        padding-right: 14px;
+        padding-right: root.has-dropdown ? 10px : 14px;
         spacing: 8px;
         alignment: start;
 
@@ -1138,6 +1139,13 @@ component M3ToolbarButton inherits Rectangle {
             font-size: 13px;
             font-weight: root.active ? 700 : 600;
             vertical-alignment: center;
+        }
+
+        if root.has-dropdown : UiIcon {
+            icon-size: 14px;
+            y: (parent.height - self.height) / 2;
+            svg-path: "M7 10l5 5 5-5z";
+            icon-color: root.active ? M3.on-primary-container : M3.on-surface-variant;
         }
     }
 
@@ -2424,11 +2432,90 @@ export component MainWindow inherits Window {
                         clicked => { root.active-tab = 0; }
                     }
 
-                    M3ToolbarButton {
+                    Rectangle {
                         y: (parent.height - self.height) / 2;
-                        text: Tr.t("Папки");
-                        svg-path: "M10 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z";
-                        clicked => { root.open-root-folder(); }
+                        width: tb-folders.preferred-width;
+                        height: tb-folders.height;
+                        background: transparent;
+
+                        tb-folders := M3ToolbarButton {
+                            width: 100%;
+                            text: Tr.t("Папки");
+                            has-dropdown: true;
+                            svg-path: "M10 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z";
+                            clicked => { folders-popup.show(); }
+                        }
+
+                        folders-popup := PopupWindow {
+                            x: 0px;
+                            y: tb-folders.height + 6px;
+                            width: 224px;
+                            height: 374px;
+                            close-policy: close-on-click-outside;
+
+                            Rectangle {
+                                width: 100%;
+                                height: 100%;
+                                border-radius: 16px * M3.radius-scale;
+                                background: M3.surface-high;
+                                border-width: 1.5px;
+                                border-color: M3.primary;
+                                clip: true;
+
+                                VerticalLayout {
+                                    padding: 6px;
+                                    spacing: 2px;
+
+                                    for fitem in [
+                                        { key: "data_root", label: Tr.t("Корень лаунчера"), icon: "M10 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z" },
+                                        { key: "instances", label: Tr.t("Сборки"), icon: "M10 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z" },
+                                        { key: "mods", label: Tr.t("Центральные моды"), icon: "M20 6h-8l-2-2H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2zm-5 3c1.1 0 2 .9 2 2s-.9 2-2 2-2-.9-2-2 .9-2 2-2zm4 7h-8v-1c0-1.33 2.67-2 4-2s4 .67 4 2v1z" },
+                                        { key: "skins", label: Tr.t("Скины"), icon: "M10 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z" },
+                                        { key: "java", label: "Java", icon: "M10 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z" },
+                                        { key: "icons_packs", label: Tr.t("Темы иконок"), icon: "M10 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z" },
+                                        { key: "themes", label: Tr.t("Темы виджетов"), icon: "M10 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z" },
+                                        { key: "cats", label: Tr.t("Паки котиков"), icon: "M10 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z" },
+                                        { key: "instance_icons", label: Tr.t("Иконки сборок"), icon: "M10 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z" },
+                                        { key: "logs", label: Tr.t("Логи"), icon: "M10 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z" },
+                                    ] : Rectangle {
+                                        height: 34px;
+                                        border-radius: 10px * M3.radius-scale;
+                                        background: f-touch.has-hover ? M3.primary-container.with-alpha(0.65) : transparent;
+                                        animate background { duration: 100ms; }
+
+                                        HorizontalLayout {
+                                            padding-left: 12px;
+                                            padding-right: 12px;
+                                            spacing: 10px;
+                                            alignment: start;
+
+                                            UiIcon {
+                                                icon-size: 16px;
+                                                y: (parent.height - self.height) / 2;
+                                                svg-path: fitem.icon;
+                                                icon-color: f-touch.has-hover ? M3.on-primary-container : M3.on-surface-variant;
+                                            }
+                                            Text {
+                                                text: fitem.label;
+                                                color: f-touch.has-hover ? M3.on-primary-container : M3.on-surface;
+                                                font-size: 13px;
+                                                font-weight: f-touch.has-hover ? 600 : 500;
+                                                vertical-alignment: center;
+                                                overflow: elide;
+                                            }
+                                        }
+
+                                        f-touch := TouchArea {
+                                            mouse-cursor: pointer;
+                                            clicked => {
+                                                folders-popup.close();
+                                                root.open-configured-folder(fitem.key);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
 
                     tb-news := M3ToolbarButton {
