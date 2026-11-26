@@ -31,12 +31,12 @@ pub enum InstallKind {
 impl InstallKind {
     pub fn label(&self) -> &'static str {
         match self {
-            InstallKind::WindowsMsi { .. } => "Windows MSI",
-            InstallKind::WindowsPortableExe { .. } => "Windows Portable (.exe)",
-            InstallKind::LinuxAppImage { .. } => "Linux AppImage",
-            InstallKind::LinuxFlatpak => "Linux Flatpak",
-            InstallKind::LinuxSystemPackage => "Linux Package (Manual)",
-            InstallKind::MacOsAppBundle { .. } => "macOS App (.dmg)",
+            InstallKind::WindowsMsi { .. } => "Установщик MSI (Windows)",
+            InstallKind::WindowsPortableExe { .. } => "Портативный .exe (Windows)",
+            InstallKind::LinuxAppImage { .. } => "AppImage (Linux)",
+            InstallKind::LinuxFlatpak => "Flatpak (Linux)",
+            InstallKind::LinuxSystemPackage => "Системный пакет Linux",
+            InstallKind::MacOsAppBundle { .. } => "Приложение macOS (.dmg)",
             InstallKind::MacOsManual => "macOS (.dmg)",
         }
     }

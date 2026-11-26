@@ -6948,7 +6948,7 @@ export component MainWindow inherits Window {
                                     alignment: start;
                                     Text { text: Tr.t("Версия:") + " " + root.app-version; color: M3.primary; font-size: 12px; font-weight: 700; }
                                     Text { text: Tr.t("Лицензия:") + " GPL-3.0-only"; color: M3.on-surface-variant; font-size: 12px; }
-                                    if root.update-install-kind-label != "" : Text { text: "• " + root.update-install-kind-label; color: M3.on-surface-variant; font-size: 12px; }
+                                    if root.update-install-kind-label != "" : Text { text: "• " + Tr.t(root.update-install-kind-label); color: M3.on-surface-variant; font-size: 12px; }
                                 }
                             }
                         }
@@ -6962,9 +6962,9 @@ export component MainWindow inherits Window {
                             VerticalLayout {
                                 padding: 18px;
                                 spacing: 10px;
-                                Text { text: Tr.t("Обновления (GitHub)"); color: M3.on-surface; font-size: 15px; font-weight: 800; }
+                                Text { text: Tr.t("Обновления"); color: M3.on-surface; font-size: 15px; font-weight: 800; }
                                 Text {
-                                    text: Tr.t("Проверка и установка обновлений через GitHub Releases (Windows MSI/EXE, Linux AppImage/Flatpak, macOS DMG; системные пакеты Linux обновляются вручную).");
+                                    text: Tr.t("Проверка и установка обновлений");
                                     color: M3.on-surface-variant;
                                     font-size: 12px;
                                     wrap: word-wrap;
