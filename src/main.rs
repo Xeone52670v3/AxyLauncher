@@ -2462,7 +2462,8 @@ fn main() -> Result<()> {
                         ui.set_update_latest_url("".into());
                         ui.set_update_asset_name("".into());
                         ui.set_update_asset_url("".into());
-                        ui.set_update_status(i18n::translate_current("Проверка...").into());
+                        ui.set_update_status_key("Проверка...".into());
+                        ui.set_update_status_detail("".into());
                     }
                 }
                 let meta = current_meta(&meta_holder);
@@ -2476,18 +2477,17 @@ fn main() -> Result<()> {
                             if silent {
                                 return;
                             }
-                            let msg = i18n::translate_current(
-                                "Релизов на GitHub пока нет. Текущая версия: v{cur}",
-                            )
-                            .replace("{cur}", updater::APP_VERSION);
-                            append_log_to_ui(&ui_weak, &log_buf, format!("[Update] {}", msg));
+                            let key = "Релизов на GitHub пока нет";
+                            let detail = format!(" (v{})", updater::APP_VERSION);
+                            append_log_to_ui(&ui_weak, &log_buf, format!("[Update] {}{}", key, detail));
                             let _ = slint::invoke_from_event_loop(move || {
                                 if let Some(ui) = ui_weak.upgrade() {
                                     ui.set_update_checking(false);
                                     ui.set_update_available(false);
                                     ui.set_update_can_auto_install(false);
                                     ui.set_update_latest_url(repo_releases_url.into());
-                                    ui.set_update_status(msg.into());
+                                    ui.set_update_status_key(key.into());
+                                    ui.set_update_status_detail(detail.into());
                                 }
                             });
                         }
@@ -2498,35 +2498,35 @@ fn main() -> Result<()> {
                             let can_auto = res.is_newer
                                 && res.install_kind.supports_auto_install()
                                 && res.asset_url.is_some();
-                            let msg = if res.is_newer {
+                            let (key, detail): (&'static str, String) = if res.is_newer {
                                 if !res.install_kind.supports_auto_install() {
-                                    i18n::translate_current(
-                                        "Доступно обновление: {tag}. Установлено через системный пакет — обновите вручную через пакетный менеджер или GitHub Releases.",
+                                    (
+                                        "Установлено через системный пакет — обновите вручную",
+                                        format!(" ({})", res.tag),
                                     )
-                                    .replace("{tag}", &res.tag)
                                 } else if res.asset_url.is_some() {
-                                    i18n::translate_current(
-                                        "Доступно обновление: {tag} (текущая v{cur})",
+                                    (
+                                        "Доступно обновление",
+                                        format!(": {} (v{})", res.tag, updater::APP_VERSION),
                                     )
-                                    .replace("{tag}", &res.tag)
-                                    .replace("{cur}", updater::APP_VERSION)
                                 } else {
-                                    i18n::translate_current(
-                                        "Доступно обновление: {tag} (подходящий файл не найден — скачайте на GitHub)",
+                                    (
+                                        "Подходящий файл не найден",
+                                        format!(" ({})", res.tag),
                                     )
-                                    .replace("{tag}", &res.tag)
                                 }
                             } else if res.tag.is_empty() {
-                                i18n::translate_current("Установлена актуальная версия: v{cur}")
-                                    .replace("{cur}", updater::APP_VERSION)
-                            } else {
-                                i18n::translate_current(
-                                    "Установлена последняя версия (v{cur}, на GitHub: {tag})",
+                                (
+                                    "Установлена последняя версия",
+                                    format!(" (v{})", updater::APP_VERSION),
                                 )
-                                .replace("{cur}", updater::APP_VERSION)
-                                .replace("{tag}", &res.tag)
+                            } else {
+                                (
+                                    "Установлена последняя версия",
+                                    format!(" (v{}, GitHub: {})", updater::APP_VERSION, res.tag),
+                                )
                             };
-                            append_log_to_ui(&ui_weak, &log_buf, format!("[Update] {}", msg));
+                            append_log_to_ui(&ui_weak, &log_buf, format!("[Update] {}{}", key, detail));
                             let asset_name = res.asset_name.unwrap_or_default();
                             let asset_url = res.asset_url.unwrap_or_default();
                             let html_url = res.html_url;
@@ -2539,7 +2539,8 @@ fn main() -> Result<()> {
                                     ui.set_update_latest_url(html_url.into());
                                     ui.set_update_asset_name(asset_name.into());
                                     ui.set_update_asset_url(asset_url.into());
-                                    ui.set_update_status(msg.into());
+                                    ui.set_update_status_key(key.into());
+                                    ui.set_update_status_detail(detail.into());
                                 }
                             });
                         }
@@ -2547,16 +2548,16 @@ fn main() -> Result<()> {
                             if silent {
                                 return;
                             }
-                            let msg =
-                                i18n::translate_current("Не удалось проверить обновления: {err}")
-                                    .replace("{err}", &e.to_string());
-                            append_log_to_ui(&ui_weak, &log_buf, format!("[Update] {}", msg));
+                            let key = "Не удалось проверить обновления";
+                            let detail = format!(": {}", e);
+                            append_log_to_ui(&ui_weak, &log_buf, format!("[Update] {}{}", key, detail));
                             let _ = slint::invoke_from_event_loop(move || {
                                 if let Some(ui) = ui_weak.upgrade() {
                                     ui.set_update_checking(false);
                                     ui.set_update_available(false);
                                     ui.set_update_can_auto_install(false);
-                                    ui.set_update_status(msg.into());
+                                    ui.set_update_status_key(key.into());
+                                    ui.set_update_status_detail(detail.into());
                                 }
                             });
                         }
@@ -2591,9 +2592,8 @@ fn main() -> Result<()> {
                         return;
                     }
                     ui.set_update_installing(true);
-                    ui.set_update_status(
-                        i18n::translate_current("Скачивание обновления...").into(),
-                    );
+                    ui.set_update_status_key("Скачивание обновления...".into());
+                    ui.set_update_status_detail("".into());
                     (u, n)
                 }
                 None => return,
@@ -2618,25 +2618,17 @@ fn main() -> Result<()> {
                     &kind,
                     move |done, total| {
                         let done_mb = done as f64 / (1024.0 * 1024.0);
-                        let msg = if total > 0 {
+                        let detail = if total > 0 {
                             let total_mb = total as f64 / (1024.0 * 1024.0);
-                            format!(
-                                "{} ({:.1} / {:.1} MB)",
-                                i18n::translate_current("Скачивание обновления..."),
-                                done_mb,
-                                total_mb
-                            )
+                            format!(" ({:.1} / {:.1} MB)", done_mb, total_mb)
                         } else {
-                            format!(
-                                "{} ({:.1} MB)",
-                                i18n::translate_current("Скачивание обновления..."),
-                                done_mb
-                            )
+                            format!(" ({:.1} MB)", done_mb)
                         };
                         let ui_p = ui_prog.clone();
                         let _ = slint::invoke_from_event_loop(move || {
                             if let Some(ui) = ui_p.upgrade() {
-                                ui.set_update_status(msg.into());
+                                ui.set_update_status_key("Скачивание обновления...".into());
+                                ui.set_update_status_detail(detail.into());
                             }
                         });
                     },
@@ -2645,22 +2637,17 @@ fn main() -> Result<()> {
 
                 match res {
                     Ok(should_exit) => {
-                        let msg = if should_exit {
-                            i18n::translate_current(
-                                "Обновление скачано. Запуск установщика и перезапуск...",
-                            )
-                            .to_string()
+                        let key = if should_exit {
+                            "Обновление скачано. Запуск установщика и перезапуск..."
                         } else {
-                            i18n::translate_current(
-                                "Образ обновления открыт. Завершите установку вручную.",
-                            )
-                            .to_string()
+                            "Образ обновления открыт. Завершите установку вручную."
                         };
-                        append_log_to_ui(&ui_weak, &log_buf, format!("[Update] {}", msg));
+                        append_log_to_ui(&ui_weak, &log_buf, format!("[Update] {}", key));
                         let ui_done = ui_weak.clone();
                         let _ = slint::invoke_from_event_loop(move || {
                             if let Some(ui) = ui_done.upgrade() {
-                                ui.set_update_status(msg.into());
+                                ui.set_update_status_key(key.into());
+                                ui.set_update_status_detail("".into());
                                 if !should_exit {
                                     ui.set_update_installing(false);
                                 }
@@ -2672,13 +2659,14 @@ fn main() -> Result<()> {
                         }
                     }
                     Err(e) => {
-                        let msg = i18n::translate_current("Ошибка установки обновления: {err}")
-                            .replace("{err}", &e.to_string());
-                        append_log_to_ui(&ui_weak, &log_buf, format!("[Update] {}", msg));
+                        let key = "Ошибка установки обновления";
+                        let detail = format!(": {}", e);
+                        append_log_to_ui(&ui_weak, &log_buf, format!("[Update] {}{}", key, detail));
                         let _ = slint::invoke_from_event_loop(move || {
                             if let Some(ui) = ui_weak.upgrade() {
                                 ui.set_update_installing(false);
-                                ui.set_update_status(msg.into());
+                                ui.set_update_status_key(key.into());
+                                ui.set_update_status_detail(detail.into());
                             }
                         });
                     }

@@ -2012,7 +2012,8 @@ export component MainWindow inherits Window {
     in-out property <bool> update-checking: false;
     in-out property <bool> update-installing: false;
     in-out property <bool> update-can-auto-install: false;
-    in-out property <string> update-status: "";
+    in-out property <string> update-status-key: "";
+    in-out property <string> update-status-detail: "";
     in-out property <string> update-latest-url: "";
     in-out property <string> update-asset-name: "";
     in-out property <string> update-asset-url: "";
@@ -6996,8 +6997,8 @@ export component MainWindow inherits Window {
                                         clicked => { root.open-url(root.update-latest-url); }
                                     }
                                 }
-                                if root.update-status != "" : Text {
-                                    text: root.update-status;
+                                if root.update-status-key != "" : Text {
+                                    text: Tr.t(root.update-status-key) + root.update-status-detail;
                                     color: root.update-available ? M3.primary : M3.on-surface-variant;
                                     font-size: 12px;
                                     font-weight: 700;
