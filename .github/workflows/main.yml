@@ -77,7 +77,7 @@
           - name: Build release binary
             run: cargo build --release
 
-          - name: Build .deb, .rpm, and .pkg.tar.zst (pacman) via nFPM
+          - name: Build .deb, .rpm, and .pacman via nFPM
             run: |
               mkdir -p out
               VERSION=$(grep -m1 '^version' Cargo.toml | sed -E 's/.*"([^"]+)".*/\1/')
@@ -86,7 +86,7 @@
               curl -sSL "https://github.com/goreleaser/nfpm/releases/download/v${NFPM_VER}/nfpm_${NFPM_VER}_Linux_x86_64.tar.gz" | tar -xz -C /tmp nfpm
               /tmp/nfpm pkg -f packaging/nfpm.yaml -p deb -t "out/AxyLauncher-${VERSION}-linux-amd64.deb"
               /tmp/nfpm pkg -f packaging/nfpm.yaml -p rpm -t "out/AxyLauncher-${VERSION}-linux-x86_64.rpm"
-              /tmp/nfpm pkg -f packaging/nfpm.yaml -p archlinux -t "out/AxyLauncher-${VERSION}-linux-x86_64.pkg.tar.zst"
+              /tmp/nfpm pkg -f packaging/nfpm.yaml -p archlinux -t "out/AxyLauncher-${VERSION}-linux-x86_64.pacman"
 
           - name: Build .AppImage
             run: |

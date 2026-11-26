@@ -2444,7 +2444,7 @@ fn main() -> Result<()> {
 
     // Check launcher updates via GitHub Releases API (Xeone52670v3/AxyLauncher)
     {
-        const APP_VERSION: &str = "0.1";
+        const APP_VERSION: &str = "0.1-a";
         const GITHUB_REPO: &str = "Xeone52670v3/AxyLauncher";
 
         fn parse_ver_tuple(raw: &str) -> Vec<u64> {
@@ -2489,10 +2489,10 @@ fn main() -> Result<()> {
 
                 match resp {
                     Ok(r) if r.status().as_u16() == 404 => {
-                        let msg = format!(
-                            "Релизов на GitHub пока нет. Текущая версия: v{}",
-                            APP_VERSION
-                        );
+                        let msg = i18n::translate_current(
+                            "Релизов на GitHub пока нет. Текущая версия: v{cur}",
+                        )
+                        .replace("{cur}", APP_VERSION);
                         append_log_to_ui(&ui_weak, &log_buf, format!("[Update] {}", msg));
                         let _ = slint::invoke_from_event_loop(move || {
                             if let Some(ui) = ui_weak.upgrade() {
@@ -2521,17 +2521,20 @@ fn main() -> Result<()> {
                                 let latest_v = parse_ver_tuple(&tag);
                                 let is_newer = !tag.is_empty() && latest_v > cur_v;
                                 let msg = if is_newer {
-                                    format!(
-                                        "Доступно обновление: {} (текущая v{})",
-                                        tag, APP_VERSION
+                                    i18n::translate_current(
+                                        "Доступно обновление: {tag} (текущая v{cur})",
                                     )
+                                    .replace("{tag}", &tag)
+                                    .replace("{cur}", APP_VERSION)
                                 } else if tag.is_empty() {
-                                    format!("Установлена актуальная версия: v{}", APP_VERSION)
+                                    i18n::translate_current("Установлена актуальная версия: v{cur}")
+                                        .replace("{cur}", APP_VERSION)
                                 } else {
-                                    format!(
-                                        "Установлена последняя версия (v{}, на GitHub: {})",
-                                        APP_VERSION, tag
+                                    i18n::translate_current(
+                                        "Установлена последняя версия (v{cur}, на GitHub: {tag})",
                                     )
+                                    .replace("{cur}", APP_VERSION)
+                                    .replace("{tag}", &tag)
                                 };
                                 append_log_to_ui(&ui_weak, &log_buf, format!("[Update] {}", msg));
                                 let _ = slint::invoke_from_event_loop(move || {
@@ -2544,7 +2547,10 @@ fn main() -> Result<()> {
                                 });
                             }
                             Err(e) => {
-                                let msg = format!("Ошибка разбора ответа GitHub: {}", e);
+                                let msg = i18n::translate_current(
+                                    "Ошибка разбора ответа GitHub: {err}",
+                                )
+                                .replace("{err}", &e.to_string());
                                 append_log_to_ui(&ui_weak, &log_buf, format!("[Update] {}", msg));
                                 let _ = slint::invoke_from_event_loop(move || {
                                     if let Some(ui) = ui_weak.upgrade() {
@@ -2557,7 +2563,8 @@ fn main() -> Result<()> {
                         }
                     }
                     Ok(r) => {
-                        let msg = format!("GitHub API вернул статус {}", r.status());
+                        let msg = i18n::translate_current("GitHub API вернул статус {code}")
+                            .replace("{code}", &r.status().to_string());
                         append_log_to_ui(&ui_weak, &log_buf, format!("[Update] {}", msg));
                         let _ = slint::invoke_from_event_loop(move || {
                             if let Some(ui) = ui_weak.upgrade() {
@@ -2568,7 +2575,9 @@ fn main() -> Result<()> {
                         });
                     }
                     Err(e) => {
-                        let msg = format!("Не удалось проверить обновления: {}", e);
+                        let msg =
+                            i18n::translate_current("Не удалось проверить обновления: {err}")
+                                .replace("{err}", &e.to_string());
                         append_log_to_ui(&ui_weak, &log_buf, format!("[Update] {}", msg));
                         let _ = slint::invoke_from_event_loop(move || {
                             if let Some(ui) = ui_weak.upgrade() {
